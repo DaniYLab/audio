@@ -1,0 +1,30 @@
+# Example story configuration consumed by `storyforge run --source-config`.
+# Schema: storyforge.core.types.StoryConfig (validated by pydantic).
+
+title: "Hồi ức của bà ngoại"
+genre: "slice of life / gia đình"
+universe: "hoi-uc"          # BẮT BUỘC — canon dài hạn, không có default (KB design §2.1)
+season: "s1"                # optional; bỏ trống = s0
+target_minutes: 5
+language: vi
+
+style:
+  tone: "ấm áp, trầm lắng, hoài niệm"
+  pov: first_person
+  tense: past
+  art_style: "watercolor illustration, soft warm palette, gentle cinematic lighting"
+
+grounding: loose          # strict = chỉ dùng sự kiện có trong KB
+premise: >
+  Một buổi chiều mưa, nhân vật nghe lại câu chuyện tuổi thơ của bà ngoại
+  về ngôi chợ quê và gánh hàng rong ngày xưa.
+source_query: "chợ quê tuổi thơ kỷ niệm gia đình"   # truy vấn knowledge base
+
+characters:
+  - name: "Bà Ngoại"
+    appearance: "Vietnamese elderly woman, silver hair in a bun, wearing a brown áo bà ba, kind wrinkled face"
+    personality: "âm áp, hay kể chuyện, trí nhớ tốt"
+    speech_style: "chậm rãi, nhiều câu hỏi tu từ"
+  - name: "Lan"
+    appearance: "Vietnamese girl aged 10, black bob hair, yellow raincoat, bright curious eyes"
+    personality: "tò mò, thích hỏi"

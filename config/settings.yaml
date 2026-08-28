@@ -1,0 +1,25 @@
+# Optional YAML overrides for Settings (env vars still win; see .env.example).
+# Keep secrets OUT of this file — it is committed to git.
+
+log_level: INFO
+log_format: console
+
+transcription:
+  engine: whisperx
+  model: large-v3
+  language: vi
+  device: cpu
+  compute_type: int8
+
+tts:
+  engine: edge
+  edge_voice: vi-VN-NamMinhNeural
+
+imaging:
+  provider: fal
+  fal_model: fal-ai/flux/schnell
+
+video:
+  crf: 20
+  ken_burns: true
+  burn_subtitles: true

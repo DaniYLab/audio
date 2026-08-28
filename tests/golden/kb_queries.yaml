@@ -1,0 +1,65 @@
+# Golden set — 15 queries (5 per job), KNOWLEDGE_BASE_DESIGN.md §7.
+# Every PR touching retrieval must run `storyforge eval` and paste results.
+# Query #8 is the anti-false-merge case: "ngoại" must resolve to the same
+# canonical as #6 and never merge two different people.
+queries:
+  - id: 1
+    job: J1
+    text: "tuổi thơ ở nông thôn miền Bắc"
+    expected: ">= 4 distinct sources in top-8"
+  - id: 2
+    job: J1
+    text: "ký ức về bà ngoại"
+    expected: ">= 4 sources, none > 3 hits"
+  - id: 3
+    job: J1
+    text: "ngày xưa đi chợ sớm"
+    expected: ">= 4 sources"
+  - id: 4
+    job: J1
+    text: "mưa và những buổi chiều quê"
+    expected: ">= 4 sources"
+  - id: 5
+    job: J1
+    text: "tin nhắn/điện thoại về nhà"
+    expected: ">= 4 sources (add corpus if missing before measuring)"
+  - id: 6
+    job: J2
+    text: "bà Ngoại"
+    expected: "canonical correct + >= 1 passage of the right person"
+  - id: 7
+    job: J2
+    text: "ba Ngoai"
+    expected: "resolves to same canonical as #6"
+  - id: 8
+    job: J2
+    text: "ngoại"
+    expected: "resolves to #6, no false merge"
+  - id: 9
+    job: J2
+    text: "ông Tư"
+    expected: "canonical correct + >= 1 passage"
+  - id: 10
+    job: J2
+    text: "chợ Đồng Xuân"
+    expected: "type=place + >= 1 passage of the right place"
+  - id: 11
+    job: J3
+    text: "cảnh chợ buổi sáng sớm"
+    expected: "chunk with start_ts in the morning-market band"
+  - id: 12
+    job: J3
+    text: "gánh hàng rong đi qua ngõ"
+    expected: "passage mentioning gánh hàng, correct source"
+  - id: 13
+    job: J3
+    text: "trời mưa, trẻ con chạy về"
+    expected: "passage in the rain-scene band"
+  - id: 14
+    job: J3
+    text: "bữa cơm tối gia đình"
+    expected: "passage in the meal band"
+  - id: 15
+    job: J3
+    text: "tiếng rao cá buổi sớm"
+    expected: "passage correct + correct time in source"

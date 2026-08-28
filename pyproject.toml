@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "storyforge"
+version = "0.1.0"
+description = "Automated story-video production pipeline: YouTube audio -> transcript -> knowledge base -> story -> narration -> images -> video"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "structlog>=24.1",
+    "tenacity>=8.3",
+    "httpx>=0.27",
+    "yt-dlp>=2026.8.19",
+]
+
+[project.optional-dependencies]
+# Local transcription (GPU/CPU). Heavy; install only when needed.
+transcription = [
+    "whisperx>=3.3",
+]
+# Local knowledge base stack.
+knowledge = [
+    "chromadb>=0.5",
+]
+# Free TTS via Edge endpoint.
+tts = [
+    "edge-tts>=6.1",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-pyyaml",
+]
+
+[project.scripts]
+storyforge = "storyforge.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/storyforge"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",       # pycodestyle / pyflakes
+    "I",                 # import sorting
+    "N",                 # pep8 naming
+    "UP",                # pyupgrade
+    "B",                 # bugbear
+    "C4",                # comprehensions
+    "SIM",               # simplify
+    "PTH",               # use pathlib
+    "RUF",               # ruff-specific
+]
+ignore = ["E501"]  # line length enforced by formatter where possible
+
+[tool.ruff.lint.isort]
+known-first-party = ["storyforge"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+disallow_untyped_decorators = false  # typer decorators are untyped
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: tests that touch external services or heavy models",
+]
