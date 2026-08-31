@@ -10,11 +10,13 @@ One real backend + one test double > two real backends (design v4 §9).
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 from storyforge.core.config import Settings
 from storyforge.core.types import KnowledgeChunk, Transcript
 from storyforge.kb.alias import AliasStore
 from storyforge.kb.embedder import _terms
+from storyforge.kb.episode_summary import EpisodeSummaryStore
 from storyforge.kb.ingest import finalize, prepare, report_from
 from storyforge.kb.types import (
     CitedPassage,
@@ -30,7 +32,13 @@ from storyforge.kb.types import (
 class InMemoryKnowledgeStore:
     """Universe-scoped fake. Implements ``KnowledgeStore``."""
 
-    def __init__(self, settings: Settings, universe_id: str) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        universe_id: str,
+        reranker: Any = None,
+        summarizer: Any = None,
+    ) -> None:
         self._settings = settings
         self._universe_id = universe_id
         self._kb = settings.knowledge
@@ -39,6 +47,10 @@ class InMemoryKnowledgeStore:
         self._alias = AliasStore(settings.knowledge.kb_data_dir / universe_id / "aliases.yaml")
         self._chunks: dict[str, KnowledgeChunk] = {}
         self._source_hashes: dict[str, str] = {}
+        self._reranker: Any = reranker
+        self._summarizer: Any = summarizer
+        self._summaries = EpisodeSummaryStore(settings.knowledge.kb_data_dir)
+        self.summaries_saved: list[str] = []  # test hook: source ids summarized
 
     # -- ingest ---------------------------------------------------------------
 
@@ -62,7 +74,29 @@ class InMemoryKnowledgeStore:
                 self._chunks[chunk.chunk_id] = chunk
             self._source_hashes[prepared.source_id] = prepared.content_hash
             self._alias.save()
+            self._summarize_best_effort(transcript)
         return report_from(prepared, status)
+
+    def _summarize_best_effort(self, transcript: Transcript) -> None:
+        """M2-V2 mirror of the Qdrant path: only for fresh ingests, and a
+        failing summarizer never fails the ingest."""
+        if self._summarizer is None and not self._kb.episode_summary_enabled:
+            return
+        summarizer = self._summarizer
+        if summarizer is None:
+            from storyforge.kb.episode_summary import LLMEpisodeSummarizer
+
+            summarizer = LLMEpisodeSummarizer(self._settings, self._universe_id)
+        try:
+            summary = summarizer.summarize(transcript)
+            # The store owns universe stamping — a summarizer that guesses
+            # the universe must not write outside this store's scope.
+            if summary.universe_id != self._universe_id:
+                summary = summary.model_copy(update={"universe_id": self._universe_id})
+            self._summaries.save(summary)
+            self.summaries_saved.append(transcript.source.id)
+        except Exception:
+            pass
 
     # -- search ----------------------------------------------------------------
 
@@ -106,6 +140,9 @@ class InMemoryKnowledgeStore:
             )
             for score, chunk in scored
         ]
+        # M2-V1: rerank before per-source capping, mirroring the Qdrant path.
+        if query.use_reranker:
+            hits = self._get_reranker().rerank(query.text, hits)
         if query.group_by_source:
             per_source: dict[str, int] = {}
             capped: list[SearchHit] = []
@@ -116,6 +153,13 @@ class InMemoryKnowledgeStore:
                     per_source[hit.source_id] = count + 1
             hits = capped
         return hits[: query.top_k]
+
+    def _get_reranker(self) -> Any:
+        if self._reranker is None:
+            from storyforge.kb.reranker import build_reranker
+
+            self._reranker = build_reranker(self._settings)
+        return self._reranker
 
     # -- entity dossier (J2) ------------------------------------------------------
 

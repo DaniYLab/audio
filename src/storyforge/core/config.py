@@ -69,6 +69,11 @@ class KnowledgeSettings(BaseModel):
     chunk_size_tokens: int = 600
     chunk_overlap_tokens: int = 90
     retrieval_top_k: int = 8
+    # M2-V1: reranker is a measured flag, NOT a default (design v4 §6).
+    reranker_enabled: bool = False
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # M2-V2: 1 LLM call per source at ingest, opt-in (design v4 §3).
+    episode_summary_enabled: bool = False
 
 
 class TTSSettings(BaseModel):
@@ -76,6 +81,7 @@ class TTSSettings(BaseModel):
     rate: str = "+0%"
     pitch: str = "+0Hz"
     edge_voice: str = "vi-VN-NamMinhNeural"
+    normalize_text: bool = True  # M2-W1: expand digits/abbreviations before TTS
     elevenlabs_api_key: SecretStr = SecretStr("")
     elevenlabs_voice_id: str = ""
 

@@ -26,6 +26,7 @@ from storyforge.core.logging import get_logger
 from storyforge.core.types import KnowledgeChunk, Transcript
 from storyforge.kb.alias import AliasStore
 from storyforge.kb.embedder import Embedding, build_embedder
+from storyforge.kb.episode_summary import EpisodeSummaryStore
 from storyforge.kb.ingest import finalize, prepare, report_from
 from storyforge.kb.types import (
     CitedPassage,
@@ -67,7 +68,14 @@ def _translate_error(exc: Exception) -> KnowledgeBaseError:
 class QdrantKnowledgeStore:
     """Universe-scoped Qdrant backend. Implements ``KnowledgeStore``."""
 
-    def __init__(self, settings: Settings, universe_id: str, embedder: Any = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        universe_id: str,
+        embedder: Any = None,
+        reranker: Any = None,
+        summarizer: Any = None,
+    ) -> None:
         from qdrant_client import QdrantClient  # lazy heavy import
 
         self._settings = settings
@@ -78,12 +86,15 @@ class QdrantKnowledgeStore:
             api_key=settings.knowledge.qdrant_api_key.get_secret_value() or None,
             timeout=int(settings.knowledge.qdrant_timeout_seconds),
         )
-        # ``embedder`` injection lets tests pass a deterministic fake; the
-        # default provider (openai | bge_m3_local) is built lazily on first
-        # use so health() works without embedding credentials.
-        self._injected_embedder = embedder
+        # ``embedder``/``reranker``/``summarizer`` injection lets tests pass
+        # deterministic fakes; defaults build the configured providers lazily
+        # on first use so health() works without embedding credentials.
         self._embedder: Any = embedder
+        self._injected_reranker = reranker
+        self._reranker: Any = reranker
+        self._summarizer: Any = summarizer
         self._alias = AliasStore(settings.knowledge.kb_data_dir / universe_id / "aliases.yaml")
+        self._summaries = EpisodeSummaryStore(settings.knowledge.kb_data_dir)
         self._collection = f"{self._kb.collection_prefix}_{universe_id}"
         self._exists_cache: bool | None = None
         # The collection is created lazily at first write, sized to the
@@ -94,6 +105,13 @@ class QdrantKnowledgeStore:
         if self._embedder is None:
             self._embedder = build_embedder(self._settings)
         return self._embedder
+
+    def _get_reranker(self) -> Any:
+        if self._reranker is None:
+            from storyforge.kb.reranker import build_reranker
+
+            self._reranker = build_reranker(self._settings)
+        return self._reranker
 
     # -- collection bootstrap (D1) --------------------------------------------
 
@@ -166,6 +184,7 @@ class QdrantKnowledgeStore:
             self._ensure_collection(dense_dim=len(embeddings[0].dense) if embeddings else None)
             self._write_points(prepared.chunks, embeddings)
             self._alias.save()  # step 7: persist pending entities
+            self._summarize_best_effort(transcript)
             logger.info(
                 "kb ingest",
                 source=prepared.source_id,
@@ -177,6 +196,31 @@ class QdrantKnowledgeStore:
             raise
         except Exception as exc:
             raise _translate_error(exc) from exc
+
+    def _summarize_best_effort(self, transcript: Transcript) -> None:
+        """M2-V2: 1 LLM call per fresh source. Best-effort — a failed summary
+        never fails the ingest (transcript is DONE regardless)."""
+        if self._summarizer is None and not self._kb.episode_summary_enabled:
+            return
+        summarizer = self._summarizer
+        if summarizer is None:
+            from storyforge.kb.episode_summary import LLMEpisodeSummarizer
+
+            summarizer = LLMEpisodeSummarizer(self._settings, self._universe_id)
+        try:
+            summary = summarizer.summarize(transcript)
+            # The store owns universe stamping — a summarizer that guesses
+            # the universe must not write outside this store's scope.
+            if summary.universe_id != self._universe_id:
+                summary = summary.model_copy(update={"universe_id": self._universe_id})
+            self._summaries.save(summary)
+            logger.info("episode summary saved", source=transcript.source.id)
+        except Exception as exc:
+            logger.warning(
+                "episode summary failed (ingest continues)",
+                source=transcript.source.id,
+                error=str(exc),
+            )
 
     def _stored_hash(self, source_id: str) -> str | None:
         from qdrant_client import models
@@ -276,6 +320,10 @@ class QdrantKnowledgeStore:
             ).points
 
             hits = [self._to_hit(point) for point in fetched]
+            # M2-V1: rerank the candidate pool BEFORE per-source capping and
+            # top_k — otherwise group_by would cap pre-rerank noise.
+            if query.use_reranker:
+                hits = self._get_reranker().rerank(query.text, hits)
             if query.group_by_source:
                 hits = _cap_per_source(hits, _MAX_PER_SOURCE)
             return hits[: query.top_k]
