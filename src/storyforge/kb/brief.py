@@ -62,10 +62,7 @@ def render_established_facts(established: list[Fact]) -> str:
     """
     if not established:
         return ""
-    lines = [
-        f"- ({fact.episode_id}) {fact.statement}" + _origin_note(fact)
-        for fact in established
-    ]
+    lines = [f"- ({fact.episode_id}) {fact.statement}" + _origin_note(fact) for fact in established]
     return "[ESTABLISHED — sự kiện đã thiết lập, KHÔNG mâu thuẫn]\n" + "\n".join(lines)
 
 
@@ -73,9 +70,7 @@ def render_invented_facts(invented: list[Fact]) -> str:
     """Render prior invented facts as the [INVENTED CÁC TẬP TRƯỚC] section."""
     if not invented:
         return ""
-    lines = [
-        f"- ({fact.episode_id}) {fact.statement}" + _origin_note(fact) for fact in invented
-    ]
+    lines = [f"- ({fact.episode_id}) {fact.statement}" + _origin_note(fact) for fact in invented]
     return "[INVENTED CÁC TẬP TRƯỚC — vẫn là canon của truyện]\n" + "\n".join(lines)
 
 

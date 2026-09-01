@@ -13,7 +13,7 @@ from pathlib import Path
 from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import ImageGenerationError
 from storyforge.core.logging import get_logger
-from storyforge.core.types import Illustration, Story
+from storyforge.core.types import Illustration, Story, StoryScene
 
 logger = get_logger(__name__)
 
@@ -71,7 +71,7 @@ class ImagingStage(Stage):
             logger.info("illustration generated", scene=scene.scene_id)
         return illustrations
 
-    def _resolve_reference(self, ctx: StageContext, scene) -> Path | None:
+    def _resolve_reference(self, ctx: StageContext, scene: StoryScene) -> Path | None:
         """Canonical character ref: first character in the beat (M3-W4 §7.1)."""
         if not scene.beat.characters:
             return None

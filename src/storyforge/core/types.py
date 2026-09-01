@@ -188,13 +188,13 @@ class VideoResult(BaseModel):
 class DimensionScore(BaseModel):
     """One rubric dimension score from the judge LLM.
 
-    M4-B2: ``score`` is 0–100; ``verdict`` is DERIVED from the score (never
-    filled by the LLM) via the 40/70 thresholds. Old 1–5 artifacts are
+    M4-B2: ``score`` is 0-100; ``verdict`` is DERIVED from the score (never
+    filled by the LLM) via the 40/70 thresholds. Old 1-5 artifacts are
     backward-compatible at render time (multiplied by 20).
     """
 
     dimension: Literal["grounding", "consistency", "pacing", "tts_ready", "visual", "hook"]
-    score: float  # 0–100 (M4-B2); 1–5 in legacy artifacts
+    score: float  # 0-100 (M4-B2); 1-5 in legacy artifacts
     evidence: str  # verbatim quoted passage as evidence
     verdict: Literal["fail", "warn", "pass"] = "pass"  # derived, not LLM-filled
 
@@ -206,16 +206,14 @@ class StoryEval(BaseModel):
     project: str
     scene_id: str  # "episode" when scoring the whole story
     scores: list[DimensionScore]
-    total: float  # mean of 6 dimensions, 0–100 scale
+    total: float  # mean of 6 dimensions, 0-100 scale
     judge_model: str
     created_at: datetime = Field(default_factory=utc_now)
 
     @property
     def passed(self) -> bool:
         """Overall verdict: any dimension fail → fail; else any warn → warn."""
-        if any(s.verdict == "fail" for s in self.scores):
-            return False
-        return True
+        return not any(s.verdict == "fail" for s in self.scores)
 
 
 class StageStatus(StrEnum):

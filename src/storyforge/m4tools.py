@@ -13,9 +13,7 @@ from storyforge.core.artifacts import ArtifactStore
 from storyforge.core.config import Settings
 from storyforge.core.exceptions import StoryGenerationError
 from storyforge.core.types import Story, StoryBeat
-from storyforge.providers.llm import LLMClient, fill_prompt, load_prompt
-from storyforge.providers.llm import extract_json
-
+from storyforge.providers.llm import LLMClient, extract_json, fill_prompt, load_prompt
 
 # --- A1: A/B hook -------------------------------------------------------------
 
@@ -132,7 +130,7 @@ def auto_thumbnail(settings: Settings, store: ArtifactStore) -> Path | None:
         if not src.exists():
             return None
         title = story.config.title
-        from PIL import Image, ImageDraw, ImageFont  # type: ignore[import-not-found]
+        from PIL import Image, ImageDraw, ImageFont
 
         img = Image.open(src).convert("RGB").resize((1280, 720))
         draw = ImageDraw.Draw(img)

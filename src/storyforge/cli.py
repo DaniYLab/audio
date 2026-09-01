@@ -28,7 +28,7 @@ from storyforge.core.config import Settings
 from storyforge.core.contracts import StageContext
 from storyforge.core.exceptions import StoryForgeError
 from storyforge.core.logging import configure_logging, get_logger
-from storyforge.core.types import StoryConfig, utc_now
+from storyforge.core.types import RunManifest, StoryConfig, utc_now
 from storyforge.kb.types import KnowledgeStore, SearchIntent, SearchQuery
 
 app = typer.Typer(
@@ -144,7 +144,7 @@ def _execute_pipeline(
 # --- M3-W6: alert on repeated stage failure -----------------------------------
 
 
-def _check_alert(settings: Settings, project: str, manifest) -> None:
+def _check_alert(settings: Settings, project: str, manifest: RunManifest) -> None:
     """Append an alert line when the same stage failed in the previous run too.
 
     Reads the per-project failure history from the workspace; after 2
@@ -154,9 +154,7 @@ def _check_alert(settings: Settings, project: str, manifest) -> None:
     from storyforge.core.types import StageStatus
 
     failed = {
-        stage
-        for stage, record in manifest.stages.items()
-        if record.status is StageStatus.FAILED
+        stage for stage, record in manifest.stages.items() if record.status is StageStatus.FAILED
     }
     history_path = Path(settings.workspace_dir) / project / ".failures.json"
     history: dict[str, int] = {}
@@ -182,7 +180,9 @@ def _check_alert(settings: Settings, project: str, manifest) -> None:
     alerts: list[str] = []
     for stage, count in history.items():
         if count >= 2:
-            alerts.append(f"[{utc_now().isoformat()}] project {project} stage {stage} fail ×{count}")
+            alerts.append(
+                f"[{utc_now().isoformat()}] project {project} stage {stage} fail x{count}"
+            )
     if alerts:
         alerts_dir = Path("data")
         alerts_dir.mkdir(parents=True, exist_ok=True)

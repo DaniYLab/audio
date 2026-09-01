@@ -16,14 +16,14 @@ after a rule-based baseline exists.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from storyforge.core.config import Settings
 from storyforge.core.logging import get_logger
 from storyforge.core.types import utc_now
-from storyforge.kb.types import ConflictReport, ConflictVerdict, Fact
-from storyforge.ledger.store import LedgerStore
+from storyforge.kb.types import ConflictReport, ConflictVerdict, Fact, FactKind
+from storyforge.ledger.store import AuditEntry, LedgerStore
 
 logger = get_logger(__name__)
 
@@ -66,16 +66,16 @@ class ArbiterLedgerStore:
     def query(
         self,
         subject: str | None = None,
-        kind: object | None = None,
+        kind: FactKind | None = None,
         include_superseded: bool = False,
     ) -> list[Fact]:
-        return self._inner.query(subject, kind, include_superseded)  # type: ignore[arg-type]
+        return self._inner.query(subject, kind, include_superseded)
 
     def supersede(self, fact_id: str, replacement: Fact, *, actor: str) -> None:
         self._inner.supersede(fact_id, replacement, actor=actor)
 
-    def get_audit_log(self, fact_id: str | None = None) -> list[object]:
-        return list(self._inner.get_audit_log(fact_id))  # type: ignore[arg-type]
+    def get_audit_log(self, fact_id: str | None = None) -> list[AuditEntry]:
+        return self._inner.get_audit_log(fact_id)
 
     # -- interception -----------------------------------------------------------
 

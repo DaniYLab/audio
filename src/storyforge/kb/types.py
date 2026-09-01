@@ -178,7 +178,7 @@ class KnowledgeBrief(BaseModel):
     reason: str | None = None
     # M3-W1: facts from the episode ledger — injected at build/update time.
     established: list[Fact] = Field(default_factory=list)  # origin=cited|inferred
-    invented: list[Fact] = Field(default_factory=list)     # origin=invented
+    invented: list[Fact] = Field(default_factory=list)  # origin=invented
 
 
 # --- protocol ---------------------------------------------------------------

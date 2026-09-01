@@ -6,6 +6,7 @@ the video stage simply reads each clip's duration via ffprobe.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from pathlib import Path
 
@@ -107,10 +108,8 @@ class TTSStage(Stage):
             clip.normalized_text = normalized_text
             # Write to cache for future runs.
             cache_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                out_path.replace(cache_path)
-            except OSError:
-                pass  # cache write is best-effort
+            with contextlib.suppress(OSError):
+                out_path.replace(cache_path)  # cache write is best-effort
             clips.append(clip)
             logger.info(
                 "narration synthesized",

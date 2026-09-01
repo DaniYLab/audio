@@ -49,7 +49,7 @@ _OPENING_DESCRIPTIVE = (
     "mặt trời",
     "bầu trời",
 )
-_QUOTE_CHARS = ('"', "'", "“", "”", "–", "-", "…")
+_QUOTE_CHARS = ('"', "'", "“", "”", "-", "-", "…")
 
 
 class StyleStats(BaseModel):
@@ -59,7 +59,7 @@ class StyleStats(BaseModel):
     avg_sentence_length: float = 0.0
     scene_openers: dict[str, int] = Field(default_factory=dict)  # dialogue/narrative/...
     ending_types: dict[str, int] = Field(default_factory=dict)  # dialogue/question/...
-    repeated_phrases: list[str] = Field(default_factory=list)  # n-grams seen > 3×
+    repeated_phrases: list[str] = Field(default_factory=list)  # n-grams seen > 3x
     avg_paragraph_length: float = 0.0
     total_words: int = 0
 
@@ -102,12 +102,14 @@ class StyleStatsTracker:
     def render(self) -> str:
         """Prompt snippet for ``working_memory.style_stats`` (M4-B1 AC2)."""
         stats = self.summarize()
-        opener_summary = ", ".join(
-            f"{kind}={count}" for kind, count in sorted(stats.scene_openers.items())
-        ) or "none yet"
-        ending_summary = ", ".join(
-            f"{kind}={count}" for kind, count in sorted(stats.ending_types.items())
-        ) or "none yet"
+        opener_summary = (
+            ", ".join(f"{kind}={count}" for kind, count in sorted(stats.scene_openers.items()))
+            or "none yet"
+        )
+        ending_summary = (
+            ", ".join(f"{kind}={count}" for kind, count in sorted(stats.ending_types.items()))
+            or "none yet"
+        )
         lines = [
             f"avg_sentence_length: {stats.avg_sentence_length} words",
             f"scene_openers so far: {opener_summary}",
@@ -151,7 +153,5 @@ def _repeated_phrases(sentences: list[str], min_count: int = 3) -> list[str]:
                 phrase = " ".join(words[i : i + size])
                 counter[phrase] += 1
     return [
-        phrase
-        for phrase, count in counter.most_common()
-        if count > min_count and len(phrase) > 3
+        phrase for phrase, count in counter.most_common() if count > min_count and len(phrase) > 3
     ]

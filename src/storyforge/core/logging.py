@@ -6,7 +6,7 @@ Rules:
 - Logs are structured key/value; never log secrets (redact at call sites —
   SecretStr fields in settings must never be passed to log calls).
 - M3-W6: every run also appends JSON lines to ``data/logs/runs/<date>.jsonl``
-  (size-rotated 10 × 10 MB) for centralized/ops observability.
+  (size-rotated 10 x 10 MB) for centralized/ops observability.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +59,7 @@ def configure_logging(settings: Settings) -> None:
         processor=structlog.processors.JSONRenderer()
     )
     file_handler = logging.handlers.RotatingFileHandler(
-        log_dir / f"{datetime.now(tz=timezone.utc).strftime('%Y-%m-%d')}.jsonl",
+        log_dir / f"{datetime.now(tz=UTC).strftime('%Y-%m-%d')}.jsonl",
         maxBytes=10 * 1024 * 1024,
         backupCount=10,
         encoding="utf-8",

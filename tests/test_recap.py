@@ -55,7 +55,13 @@ def test_should_recap_recap_off(config: StoryConfig):
 
 
 def test_build_recap_plan_episode1_empty(universe: Path, config: StoryConfig):
-    plan = build_recap_plan(config, 1, load_universe(universe), EpisodeSummaryStore(universe.parent / "kb"), universe.parent)
+    plan = build_recap_plan(
+        config,
+        1,
+        load_universe(universe),
+        EpisodeSummaryStore(universe.parent / "kb"),
+        universe.parent,
+    )
     assert plan.enabled is False
 
 
@@ -78,7 +84,9 @@ def test_build_recap_plan_uses_summary_color(universe: Path, config: StoryConfig
         EpisodeSummary(
             source_id="ep002",
             universe_id="storyvu",
-            moments=[SummaryMoment(person="Lan", place="bờ sông", action="cầm chiếc lá đỏ dưới mưa")],
+            moments=[
+                SummaryMoment(person="Lan", place="bờ sông", action="cầm chiếc lá đỏ dưới mưa")
+            ],
         )
     )
     plan = build_recap_plan(config, 2, ledger, summaries, universe.parent)
@@ -94,13 +102,23 @@ def test_build_recap_plan_no_ledger_yet(tmp_path: Path, config: StoryConfig):
 
 
 def test_recap_plan_word_cap_trims(universe: Path, config: StoryConfig):
-    from storyforge.ledger import load_universe
-
     ledger = build_ledger(universe)
     for i in range(12):
         ledger.record_episode(
             f"ep_{100+i:03d}",
-            [_fact(f"f{i:04d}", "Một câu chuyện dài về ký ức tuổi thơ ở nông thôn miền Bắc ngày xưa.", f"ep_{100+i:03d}")],
+            [
+                _fact(
+                    f"f{i+100:04d}",
+                    "Một câu chuyện dài về ký ức tuổi thơ ở nông thôn miền Bắc ngày xưa.",
+                    f"ep_{100+i:03d}",
+                )
+            ],
         )
-    plan = build_recap_plan(config, 2, load_universe(universe), EpisodeSummaryStore(universe.parent / "kb"), universe.parent)
+    plan = build_recap_plan(
+        config,
+        2,
+        load_universe(universe),
+        EpisodeSummaryStore(universe.parent / "kb"),
+        universe.parent,
+    )
     assert plan.word_count <= 90

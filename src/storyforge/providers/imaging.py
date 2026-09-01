@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -91,7 +90,9 @@ class OpenAIImageGenerator:
         if not llm_key:
             raise ImageGenerationError("SF__LLM__API_KEY is required for openai imaging")
 
-    def generate_from_prompt(self, prompt: str, out_path: str) -> Illustration:
+    def generate_from_prompt(
+        self, prompt: str, out_path: str, reference_image: Path | None = None
+    ) -> Illustration:
         import httpx
 
         url = f"{self._settings.llm.base_url.rstrip('/')}/images/generations"
@@ -101,6 +102,13 @@ class OpenAIImageGenerator:
             "prompt": prompt,
             "size": f"{self._settings.imaging.width}x{self._settings.imaging.height}",
         }
+        # M3-W4: reference images are passed through when the endpoint supports
+        # them; gpt-image-1 uses the images API which accepts a base64 ref.
+        if reference_image is not None:
+            import base64
+
+            ref_b64 = base64.b64encode(reference_image.read_bytes()).decode("utf-8")
+            payload["reference_image"] = f"data:image/png;base64,{ref_b64}"
 
         def _call() -> dict[str, object]:
             response = httpx.post(url, headers=headers, json=payload, timeout=180.0)
@@ -122,9 +130,10 @@ class OpenAIImageGenerator:
         first = items[0]
         if not isinstance(first, dict):
             raise ImageGenerationError("openai images returned malformed data")
-        b64 = first.get("b64_json")
-        if not isinstance(b64, str) or not b64:
+        b64_raw = first.get("b64_json")
+        if not isinstance(b64_raw, str) or not b64_raw:
             raise ImageGenerationError("openai images returned no b64_json")
+        b64: str = b64_raw
 
         Path(out_path).write_bytes(base64.b64decode(b64))
         return Illustration(

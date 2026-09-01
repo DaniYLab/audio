@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from storyforge.core.types import StoryConfig
 from storyforge.kb.episode_summary import EpisodeSummary, EpisodeSummaryStore
+from storyforge.kb.types import Fact
 from storyforge.ledger.loader import UniverseLedger
 
 _MAX_RECAP_WORDS = 90  # ~30s narration (AC2)
@@ -42,6 +43,19 @@ class RecapPlan(BaseModel):
     word_count: int = 0
     image_paths: list[str] = Field(default_factory=list)
     subtitle_lines: list[str] = Field(default_factory=list)  # per-image captions
+
+
+class RecapSegment(BaseModel):
+    """A rendered recap clip, ready to prepend before scene 0 (A2 AC3).
+
+    ``audio_path`` is the synthesized TTS clip; ``image_path`` the montage
+    still used by the video stage (one still + duration=audio is enough for a
+    20-30s recap).
+    """
+
+    audio_path: str
+    image_path: str
+    subtitle: str = ""
 
 
 def should_recap(config: StoryConfig, episode_number: int) -> tuple[bool, str | None]:
@@ -68,7 +82,7 @@ def build_recap_plan(
         return RecapPlan(enabled=False, skip_reason=reason)
 
     facts = ledger.all_facts
-    recent = sorted(facts, key=lambda f: f.episode_id)[-_RECAP_FACT_CAP :]
+    recent = sorted(facts, key=lambda f: f.episode_id)[-_RECAP_FACT_CAP:]
     if not recent:
         return RecapPlan(enabled=False, skip_reason="no established facts yet")
 
@@ -87,18 +101,11 @@ def build_recap_plan(
 
 
 def _script_from_facts(
-    recent: list[object],
-    summaries: EpisodeSummaryStore,
-    universe_dir: Path,
-    universe_id: str,
+    recent: list[Fact], summaries: EpisodeSummaryStore, universe_dir: Path, universe_id: str
 ) -> list[str]:
-    """One sentence per key fact, recency-capped. ``recent`` are Fact models."""
-    from storyforge.kb.types import Fact
-
+    """One sentence per key fact, recency-capped."""
     lines: list[str] = []
     for fact in recent:
-        if not isinstance(fact, Fact):
-            continue
         if fact.superseded_by:
             continue  # superseded facts are not current canon
         lines.append(_fact_sentence(fact))
@@ -120,9 +127,8 @@ def _script_from_facts(
     return lines
 
 
-def _fact_sentence(fact: object) -> str:
-    statement = str(getattr(fact, "statement", ""))
-    return statement
+def _fact_sentence(fact: Fact) -> str:
+    return fact.statement
 
 
 def _latest_summary(summaries: EpisodeSummaryStore, universe_id: str) -> EpisodeSummary | None:
@@ -150,6 +156,4 @@ def write_recap_plan(ctx_store: object, plan: RecapPlan, out_dir: Path) -> None:
 
     if isinstance(ctx_store, ArtifactStore):
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "recap_plan.json").write_text(
-            plan.model_dump_json(indent=2), encoding="utf-8"
-        )
+        (out_dir / "recap_plan.json").write_text(plan.model_dump_json(indent=2), encoding="utf-8")

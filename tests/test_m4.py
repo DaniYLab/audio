@@ -11,7 +11,6 @@ from storyforge.eval_story import _score_to_100, _verdict_for
 from storyforge.guard import CheckpointDeltaGuard, GuardError
 from storyforge.stylestat import StyleStatsTracker
 
-
 # --- M4-B3: CheckpointDeltaGuard ----------------------------------------------
 
 

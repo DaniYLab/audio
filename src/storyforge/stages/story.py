@@ -7,7 +7,7 @@ The writer receives the rendered brief sections, never raw hit strings.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import StoryForgeError, StoryGenerationError
@@ -20,6 +20,9 @@ from storyforge.providers.knowledge import build_universe_store
 from storyforge.stylestat import StyleStatsTracker
 from storyforge.textnorm import TextNormalizer
 
+if TYPE_CHECKING:
+    from storyforge.ledger.store import LedgerStore
+
 logger = get_logger(__name__)
 
 
@@ -30,7 +33,7 @@ def _lint_feedback_text(issues: list[LintIssue]) -> str:
 
 
 def _guard_feedback_text(exc: GuardError) -> str:
-    return f"[ARTIFACT GUARD] {str(exc)} — write something different"
+    return f"[ARTIFACT GUARD] {exc!s} — write something different"
 
 
 class StoryStage(Stage):
@@ -39,7 +42,7 @@ class StoryStage(Stage):
     def __init__(self, config: StoryConfig) -> None:
         self.config = config
 
-    def _build_ledger(self, ctx: StageContext):
+    def _build_ledger(self, ctx: StageContext) -> LedgerStore | None:
         """Inject the universe ledger (M3-W1); None when no ledger exists yet."""
         from storyforge.ledger.store import build_ledger
 

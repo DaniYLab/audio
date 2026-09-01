@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from storyforge.core.artifacts import ArtifactStore
 from storyforge.core.config import Settings
@@ -48,11 +49,11 @@ def _lint_summary(lint: LintReport | None) -> str:
 
 
 def _score_to_100(raw: float) -> float:
-    """M4-B2 AC4: legacy 1-5 -> 0-100 by scaling ×20."""
+    """M4-B2 AC4: legacy 1-5 -> 0-100 by scaling x20."""
     return raw * 20.0 if raw <= 5.0 else raw
 
 
-def _verdict_for(score: float) -> str:
+def _verdict_for(score: float) -> Literal["fail", "warn", "pass"]:
     """M4-B2 AC1: verdict DERIVED from score thresholds, never LLM."""
     return "fail" if score < 40 else ("warn" if score < 70 else "pass")
 

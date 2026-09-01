@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import VideoAssemblyError
@@ -19,6 +20,9 @@ from storyforge.core.types import (
     SubtitleLine,
     VideoResult,
 )
+
+if TYPE_CHECKING:
+    from storyforge.recap import RecapSegment
 
 logger = get_logger(__name__)
 
@@ -31,10 +35,13 @@ class VideoStage(Stage):
         clips: list[NarrationClip],
         illustrations: list[Illustration],
         music_mood: str | None = None,
+        recap: RecapSegment | None = None,
     ) -> None:
         self.clips = clips
         self.illustrations = {i.scene_id: i for i in illustrations}
         self.music_mood = music_mood
+        # M4-A2: optional Previously-On recap clip prepended before scene 0.
+        self.recap = recap
 
     def run(self, ctx: StageContext, *, force: bool = False) -> VideoResult:
         settings = ctx.settings.video
@@ -50,17 +57,47 @@ class VideoStage(Stage):
         if not self.clips:
             raise VideoAssemblyError("no narration clips to assemble")
 
-        subtitles = self._build_subtitles(ctx)
+        # M4-A2: prepend recap clip if provided.
+        recap_clips: list[NarrationClip] = []
+        recap_illustrations: dict[str, Illustration] = {}
+        recap_texts: dict[str, str] = {}
+        if self.recap is not None:
+            from storyforge.core.types import NarrationClip as NCli
+            from storyforge.providers.tts import probe_duration
+
+            rec_dur = probe_duration(self.recap.audio_path, settings.ffprobe_bin)
+            recap_clips = [
+                NCli(
+                    scene_id="recap",
+                    audio_path=Path(self.recap.audio_path),
+                    duration_seconds=rec_dur,
+                    char_count=len(self.recap.subtitle),
+                )
+            ]
+            recap_illustrations = {
+                "recap": Illustration(
+                    scene_id="recap", image_path=Path(self.recap.image_path), prompt_hash="recap"
+                )
+            }
+            recap_texts["recap"] = self.recap.subtitle
+
+        all_clips = recap_clips + self.clips
+        all_illustrations = {**recap_illustrations, **self.illustrations}
+        # The "recap" scene is not in the story artifact, so its subtitle text
+        # is injected explicitly before building the SRT.
+        scene_texts = {**recap_texts, **self._scene_texts(ctx)}
+
+        subtitles = self._build_subtitles(ctx, clips=all_clips, scene_texts=scene_texts)
         srt_path = ctx.store.dir("logs") / "subtitles.srt"
         srt_path.write_text(self._to_srt(subtitles), encoding="utf-8")
 
         segment_paths = [
-            self._render_segment(ctx, clip)
-            for clip in self.clips
-            if clip.scene_id in self.illustrations
+            self._render_segment(ctx, clip, illust=all_illustrations.get(clip.scene_id))
+            for clip in all_clips
+            if clip.scene_id in all_illustrations
         ]
-        if len(segment_paths) != len(self.clips):
-            missing = {c.scene_id for c in self.clips} - set(self.illustrations)
+        if len(segment_paths) != len(all_clips):
+            missing = {c.scene_id for c in all_clips} - set(all_illustrations)
             raise VideoAssemblyError(f"missing illustrations for scenes: {sorted(missing)}")
 
         concat_list = ctx.store.dir("logs") / "concat.txt"
@@ -79,7 +116,7 @@ class VideoStage(Stage):
             "-i",
             str(concat_list),
             "-i",
-            _audio_concat_arg(self.clips),
+            _audio_concat_arg(all_clips),
         ]
         if music_path is not None:
             cmd += ["-i", str(music_path)]
@@ -110,19 +147,21 @@ class VideoStage(Stage):
         log_path = ctx.store.dir("logs") / "ffmpeg.log"
         self._run_ffmpeg(cmd, log_path)
 
-        total = sum(c.duration_seconds for c in self.clips)
+        total = sum(c.duration_seconds for c in all_clips)
         logger.info("video assembled", path=str(out_path), seconds=total)
         return VideoResult(
             video_path=out_path,
             duration_seconds=total,
-            scene_count=len(self.clips),
+            scene_count=len(all_clips),
             ffmpeg_command_log=log_path,
         )
 
-    def _render_segment(self, ctx: StageContext, clip: NarrationClip) -> Path:
+    def _render_segment(
+        self, ctx: StageContext, clip: NarrationClip, illust: Illustration | None = None
+    ) -> Path:
         """Render one scene: still image + Ken Burns, duration = clip duration."""
         settings = ctx.settings.video
-        illustration = self.illustrations[clip.scene_id]
+        illustration = illust or self.illustrations[clip.scene_id]
         out = ctx.store.dir("logs") / f"seg_{clip.scene_id}.mp4"
         frames = int(clip.duration_seconds * 30) + 1  # 30 fps
 
@@ -164,19 +203,25 @@ class VideoStage(Stage):
         self._run_ffmpeg(cmd, ctx.store.dir("logs") / f"ffmpeg_{clip.scene_id}.log")
         return out
 
-    def _build_subtitles(self, ctx: StageContext) -> list[SubtitleLine]:
+    def _build_subtitles(
+        self,
+        ctx: StageContext,
+        clips: list[NarrationClip] | None = None,
+        scene_texts: dict[str, str] | None = None,
+    ) -> list[SubtitleLine]:
         # Scene-level subtitles from clip timings; text comes from the story
         # artifact so subtitles always match the narration exactly.
+        scenes = scene_texts or self._scene_texts(ctx)
+        use_clips = clips if clips is not None else self.clips
         lines: list[SubtitleLine] = []
         cursor = 0.0
-        scene_texts = self._scene_texts(ctx)
-        for i, clip in enumerate(self.clips):
+        for i, clip in enumerate(use_clips):
             lines.append(
                 SubtitleLine(
                     index=i + 1,
                     start=cursor,
                     end=cursor + clip.duration_seconds,
-                    text=scene_texts.get(clip.scene_id, ""),
+                    text=scenes.get(clip.scene_id, ""),
                 )
             )
             cursor += clip.duration_seconds
