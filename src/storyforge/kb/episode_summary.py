@@ -44,7 +44,7 @@ class EpisodeSummarizer(Protocol):
 
 
 class LLMEpisodeSummarizer:
-    """Real summarizer: reviewer model + prompts/episode_summary.txt.
+    """Real summarizer: writer model + prompts/episode_summary.txt.
 
     The LLM client is built lazily so constructing the summarizer never
     requires an API key (stores build it only when the ingest flag is on).
@@ -57,7 +57,8 @@ class LLMEpisodeSummarizer:
     def summarize(self, transcript: Transcript) -> EpisodeSummary:
         from storyforge.providers.llm import LLMClient, fill_prompt, load_prompt
 
-        client = LLMClient(self._settings, self._settings.llm.reviewer_model)
+        # M2 §5.2: writer model (the summarizer shapes the writer's J1 input).
+        client = LLMClient(self._settings, self._settings.llm.writer_model)
         template = load_prompt("episode_summary")
         response = client.chat(
             system=fill_prompt(template, {"language": transcript.language}),
@@ -67,7 +68,7 @@ class LLMEpisodeSummarizer:
             source_id=transcript.source.id,
             universe_id=self._universe_id,
             moments=parse_moments(response),
-            model=self._settings.llm.reviewer_model,
+            model=self._settings.llm.writer_model,
         )
 
 
@@ -117,3 +118,8 @@ def parse_moments(response: str) -> list[SummaryMoment]:
             )
         )
     return moments
+
+
+def summary_text(summary: EpisodeSummary) -> str:
+    """Human-readable one-line-per-moment text for the chunk payload."""
+    return "\n".join(f"{m.person} | {m.place} | {m.action} | {m.detail}" for m in summary.moments)

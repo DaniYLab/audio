@@ -62,6 +62,7 @@ class KnowledgeSettings(BaseModel):
     collection_prefix: str = "storyforge_kb"  # Qdrant: <prefix>_<universe>
     persist_dir: Path = Path("data/kb")
     kb_data_dir: Path = Path("data/kb")  # alias tables: <dir>/<universe>/aliases.yaml
+    ledgers_dir: Path = Path("data/ledgers")  # fact ledgers: <dir>/<universe>/s<N>/ep<M>.yaml
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: SecretStr = SecretStr("")
     qdrant_timeout_seconds: float = 30.0
@@ -69,11 +70,16 @@ class KnowledgeSettings(BaseModel):
     chunk_size_tokens: int = 600
     chunk_overlap_tokens: int = 90
     retrieval_top_k: int = 8
-    # M2-V1: reranker is a measured flag, NOT a default (design v4 §6).
-    reranker_enabled: bool = False
+    # M2 §5.1: reranker stays a measured flag until ARCH signs the default
+    # (J2 hit-rate +>= 3pp AND p95 < 2s). Env: SF__KNOWLEDGE__USE_RERANKER.
+    use_reranker: bool = False
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    # M2-V2: 1 LLM call per source at ingest, opt-in (design v4 §3).
-    episode_summary_enabled: bool = False
+    # M2 §5.2: 1 LLM call per fresh source at ingest (default ON in M2).
+    # Env: SF__KNOWLEDGE__EPISODE_SUMMARY.
+    episode_summary: bool = True
+    # M3 §8.3: publish license gate; empty = allow all. Unknown sources are
+    # always flagged with license_warning=True in the IngestReport.
+    allowed_licenses: list[str] = Field(default_factory=list)
 
 
 class TTSSettings(BaseModel):
@@ -103,6 +109,9 @@ class VideoSettings(BaseModel):
     ken_burns: bool = True
     burn_subtitles: bool = True
     transition_seconds: float = 0.5
+    # M3 §6: hardware-accelerated encode. "auto" probes ffmpeg encoders once
+    # and prefers nvenc > qsv > libx264 (result cached in the workspace).
+    encoder: Literal["auto", "libx264", "h264_nvenc", "h264_qsv"] = "auto"
 
 
 class Settings(BaseSettings):

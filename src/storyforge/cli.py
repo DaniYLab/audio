@@ -83,6 +83,7 @@ def _execute_pipeline(
     from storyforge.stages.download import DownloadStage
     from storyforge.stages.imaging import ImagingStage
     from storyforge.stages.knowledge import KnowledgeStage
+    from storyforge.stages.review import ReviewStage
     from storyforge.stages.story import StoryStage
     from storyforge.stages.transcribe import TranscribeStage
     from storyforge.stages.tts import TTSStage
@@ -115,6 +116,10 @@ def _execute_pipeline(
     story_stage = StoryStage(config=story_config)
     story = story_stage.run(ctx, force=force)
     ctx.mark_done("story", scenes=len(story.scenes))
+    store.save_manifest(manifest)
+
+    review = ReviewStage(story=story).run(ctx, force=force)
+    ctx.mark_done("review", conflicts=review.summary.n_conflict)
     store.save_manifest(manifest)
 
     tts_stage = TTSStage(story=story)
@@ -248,9 +253,9 @@ def eval_cmd(
     queries = _load_golden(golden)
 
     if compare_reranker:
-        settings.knowledge.reranker_enabled = False
+        settings.knowledge.use_reranker = False
         off = _run_golden(build_universe_store(settings, universe), queries, False)
-        settings.knowledge.reranker_enabled = True
+        settings.knowledge.use_reranker = True
         on = _run_golden(build_universe_store(settings, universe), queries, True)
         _print_golden_table(f"Golden set eval — reranker OFF — universe: {universe}", off[0])
         _print_golden_table(f"Golden set eval — reranker ON — universe: {universe}", on[0])
@@ -258,7 +263,7 @@ def eval_cmd(
         _write_baseline_kb(golden, universe, off[1], on[1])
         return
 
-    settings.knowledge.reranker_enabled = settings.knowledge.reranker_enabled or reranker
+    settings.knowledge.use_reranker = settings.knowledge.use_reranker or reranker
     store = build_universe_store(settings, universe)
     rows, aggregates = _run_golden(store, queries, reranker)
     _print_golden_table(f"Golden set eval — universe: {universe}", rows)
@@ -637,6 +642,98 @@ def cost(
     out = store.root / "cost_report.json"
     store.write_model(out, report)
     console.print(f"report written to {out}")
+
+
+# --- M2-W4: prompt-eval harness -------------------------------------------------
+
+
+@app.command(name="eval-story")
+def eval_story_cmd(
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    judge_model: Annotated[str | None, typer.Option(help="Override judge model.")] = None,
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Score every scene with the judge model (rubric 6 chiều) — M2-W4."""
+    from storyforge.core.artifacts import ArtifactStore
+    from storyforge.eval_story import eval_story
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    store = ArtifactStore(settings.workspace_dir, project)
+    evals = eval_story(settings, store, judge_model=judge_model)
+
+    table = Table(title=f"Story eval — project: {project}")
+    table.add_column("scene")
+    table.add_column("total")
+    for dimension in ("grounding", "consistency", "pacing", "tts_ready", "visual", "hook"):
+        table.add_column(dimension[:4])
+    for evaluation in evals:
+        by_dim = {s.dimension: f"{s.score:.1f}" for s in evaluation.scores}
+        table.add_row(
+            evaluation.scene_id,
+            f"{evaluation.total:.1f}",
+            *[
+                by_dim.get(d, "—")
+                for d in ("grounding", "consistency", "pacing", "tts_ready", "visual", "hook")
+            ],
+        )
+    console.print(table)
+    console.print(f"[green]✓[/green] {len(evals)} scene(s) scored; results in evals/story/")
+
+
+# --- M2-W6: A/B visual style tooling -------------------------------------------
+
+
+@app.command(name="ab-style")
+def ab_style_cmd(
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    scenes: Annotated[str, typer.Option(help="Comma-separated scene indexes to render.")] = "1,4,9",
+    styles: Annotated[
+        str, typer.Option(help="Comma-separated art styles.")
+    ] = "watercolor,anime,cinematic",
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Render selected scenes across styles into 06_images/ab/ for visual A/B (M2-W6)."""
+    from storyforge.core.artifacts import ArtifactStore
+    from storyforge.core.types import Story
+    from storyforge.providers.imaging import build_image_generator
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    store = ArtifactStore(settings.workspace_dir, project)
+    story = store.read_model(store.story_path(), Story)
+
+    scene_indexes = [int(s) for s in scenes.split(",") if s.strip().isdigit()]
+    style_list = [s.strip() for s in styles.split(",") if s.strip()]
+
+    generator = build_image_generator(settings)
+    appearances = {c.name: c.appearance for c in story.config.characters}
+    ab_dir = store.dir("06_images") / "ab"
+
+    rendered: list[tuple[str, str, Path]] = []
+    for index in scene_indexes:
+        if index < 1 or index > len(story.scenes):
+            console.print(f"[yellow]skip[/yellow] scene index {index} out of range")
+            continue
+        scene = story.scenes[index - 1]
+        for style in style_list:
+            from storyforge.stages.imaging import ImagingStage
+
+            prompt = ImagingStage._compose_prompt(
+                scene.beat.image_hint or scene.image_prompt, appearances, style
+            )
+            out_path = ab_dir / f"{style}_{scene.scene_id}.png"
+            generator.generate_from_prompt(prompt, str(out_path))
+            rendered.append((scene.scene_id, style, out_path))
+
+    table = Table(title=f"AB images — project: {project}")
+    table.add_column("scene")
+    table.add_column("style")
+    table.add_column("path")
+    for scene_id, style, path in rendered:
+        table.add_row(scene_id, style, str(path))
+    console.print(table)
+    console.print(f"[green]✓[/green] {len(rendered)} image(s) in 06_images/ab/")
 
 
 @app.callback()

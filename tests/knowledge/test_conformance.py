@@ -36,6 +36,7 @@ def _settings(tmp_path: Path, store: str) -> Settings:
         llm__api_key="test-key",
         knowledge__store=store,
         knowledge__kb_data_dir=tmp_path / "kb",
+        knowledge__episode_summary=False,  # unit tests never call the LLM
         workspace_dir=tmp_path / "ws",
     )
 

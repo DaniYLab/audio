@@ -60,7 +60,7 @@ class CrossEncoderReranker:
 
 def build_reranker(settings: Settings) -> Reranker:
     knowledge = settings.knowledge
-    if knowledge.reranker_enabled:
+    if knowledge.use_reranker:
         return CrossEncoderReranker(knowledge.reranker_model)
     return NoopReranker()
 

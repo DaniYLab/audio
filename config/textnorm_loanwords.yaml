@@ -1,0 +1,7 @@
+# Loanword table for TextNormalizer (M2-D1 spec §1.5).
+# QUY TẮC: KHÔNG dịch nghĩa, chỉ phiên âm gần nhất để TTS đọc không vấp.
+ok: "ô kê"
+app: "áp"
+video: "vi đi ô"
+online: "on láyn"
+email: "i méo"

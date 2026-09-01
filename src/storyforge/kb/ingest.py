@@ -42,6 +42,8 @@ class PreparedSource:
     entities_new: int = 0
     entities_pending: int = 0
     unmapped_report: list[dict[str, object]] = field(default_factory=list)
+    license: str = "unknown"  # from transcript.source.license (M3 §8.3)
+    summary_generated: bool = False  # M2 §5.2: true after LLM call per source
 
 
 def content_hash(transcript: Transcript) -> str:
@@ -203,6 +205,7 @@ def prepare(
         entities_new=entities_new,
         entities_pending=len(alias.unmapped_report(mentions, top=10**9)),
         unmapped_report=alias.unmapped_report(mentions),
+        license=getattr(transcript.source, "license", "unknown"),
     )
     return report
 
@@ -225,4 +228,6 @@ def report_from(prepared: PreparedSource, status: str) -> IngestReport:
         chunks_written=len(prepared.chunks) if status != "noop" else 0,
         entities_new=prepared.entities_new,
         entities_pending=prepared.entities_pending,
+        summary_generated=prepared.summary_generated,
+        license_warning=prepared.license == "unknown",
     )

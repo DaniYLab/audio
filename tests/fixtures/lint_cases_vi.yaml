@@ -1,0 +1,263 @@
+- id: t01
+  category: time
+  input: 10h30 tối bà mới về
+  expected_contains:
+  - mười giờ ba mươi
+- id: t02
+  category: time
+  input: Chuyến tàu khởi hành lúc 8h sáng
+  expected_contains:
+  - tám giờ
+- id: t03
+  category: time
+  input: Cuộc họp bắt đầu 14:00 chiều
+  expected_contains:
+  - mười bốn giờ
+- id: t04
+  category: time
+  input: Anh ấy gọi điện lúc 21:05
+  expected_contains:
+  - hai mươi mốt giờ năm
+- id: t05
+  category: time
+  input: Đồng hồ điểm 6h15
+  expected_contains:
+  - sáu giờ mười lăm
+- id: t06
+  category: time
+  input: Từ 9:30 sáng đến trưa
+  expected_contains:
+  - chín giờ ba mươi
+- id: t07
+  category: time
+  input: 12h đêm, tiếng gõ cửa vang lên
+  expected_contains:
+  - mười hai giờ
+- id: t08
+  category: time
+  input: Cô ấy thức dậy lúc 5h
+  expected_contains:
+  - năm giờ
+- id: c01
+  category: currency
+  input: bán được 200k
+  expected_contains:
+  - hai trăm nghìn
+- id: c02
+  category: currency
+  input: món đồ giá 1.5tr
+  expected_contains:
+  - một triệu rưỡi
+- id: c03
+  category: currency
+  input: nợ anh ấy 3 tỷ
+  expected_contains:
+  - ba tỷ
+- id: c04
+  category: currency
+  input: tiền thuê nhà 2tr một tháng
+  expected_contains:
+  - hai triệu
+- id: c05
+  category: currency
+  input: cô bán gánh hàng kiếm 500k mỗi ngày
+  expected_contains:
+  - năm trăm nghìn
+- id: c06
+  category: currency
+  input: chỉ còn 50k trong túi
+  expected_contains:
+  - năm mươi nghìn
+- id: y01
+  category: year
+  input: năm 1995, bà tôi mới về quê
+  expected_contains:
+  - một chín chín năm
+- id: y02
+  category: year
+  input: từ 2020 đến giờ
+  expected_contains:
+  - hai không hai không
+- id: y03
+  category: year
+  input: 1995, bà mới về
+  expected_contains:
+  - một chín chín năm
+- id: y04
+  category: year
+  input: … đi. 2020 mẹ mất.
+  expected_contains:
+  - hai không hai không
+- id: y05
+  category: year
+  input: vào tháng 5 năm 2010
+  expected_contains:
+  - hai không một không
+- id: y06
+  category: year
+  input: thập niên 80 của thế kỷ trước
+  expected_contains:
+  - tám mươi
+- id: d01
+  category: decimal
+  input: 3,14 là số pi
+  expected_contains:
+  - ba phẩy mười bốn
+- id: d02
+  category: decimal
+  input: điểm trung bình 8.5
+  expected_contains:
+  - tám phẩy năm
+- id: d03
+  category: decimal
+  input: 1,5 lít nước
+  expected_contains:
+  - một phẩy năm
+- id: d04
+  category: decimal
+  input: 2.75 mét vải
+  expected_contains:
+  - hai phẩy bảy mươi lăm
+- id: d05
+  category: decimal
+  input: 0.5 kg đường
+  expected_contains:
+  - không phẩy năm
+- id: r01
+  category: roman
+  input: chương XIV của cuốn sách
+  expected_contains:
+  - mười bốn
+- id: r02
+  category: roman
+  input: tập II trong bộ truyện
+  expected_contains:
+  - hai
+- id: r03
+  category: roman
+  input: phần V kết thúc câu chuyện
+  expected_contains:
+  - năm
+- id: p01
+  category: percent
+  input: giảm giá 50%
+  expected_contains:
+  - năm mươi phần trăm
+- id: p02
+  category: percent
+  input: tăng trưởng 12.5%
+  expected_contains:
+  - mười hai phẩy năm phần trăm
+- id: p03
+  category: percent
+  input: chỉ còn 10% sức lực
+  expected_contains:
+  - mười phần trăm
+- id: p04
+  category: percent
+  input: 99% là may mắn
+  expected_contains:
+  - chín mươi chín phần trăm
+- id: l01
+  category: loanword
+  input: anh ấy nói OK rồi đi
+  expected_contains:
+  - ô kê
+- id: l02
+  category: loanword
+  input: tải ứng dụng app về điện thoại
+  expected_contains:
+  - áp
+- id: l03
+  category: loanword
+  input: xem video trên điện thoại
+  expected_contains:
+  - vi đi ô
+- id: l04
+  category: loanword
+  input: mua hàng online
+  expected_contains:
+  - on láyn
+- id: l05
+  category: loanword
+  input: gửi email cho cô ấy
+  expected_contains:
+  - i méo
+- id: l06
+  category: loanword
+  input: OK, tôi sẽ đến
+  expected_contains:
+  - ô kê
+- id: s01
+  category: long-sentence
+  input: Bà kể rằng hồi trẻ bà từng gánh hàng rong đi khắp các con phố nhỏ của Hà
+    Nội xưa, khi những gánh hàng còn đông đúc và tiếng rao vang từ sáng sớm tinh mơ
+    cho đến tận lúc hoàng hôn buông xuống trên mặt hồ lộng gió mùa thu.
+  expect_severity: fail
+  expect_rule: sentence_length
+- id: s02
+  category: long-sentence
+  input: Câu chuyện kéo dài mãi không dứt, người nghe cứ ngồi im lặng mà không dám
+    cắt ngang lời kể của ông lão già nua tóc bạc trắng đang ngồi dưới gốc cây đa cổ
+    thụ đầu làng nhỏ.
+  expect_severity: fail
+  expect_rule: sentence_length
+- id: s03
+  category: long-sentence
+  input: Năm ấy trời mưa rất to suốt cả đêm không ngớt tiếng sấm chớp giật tung nền
+    trời đen kịt
+  expect_severity: warn
+  expect_rule: sentence_length_warn
+- id: s04
+  category: long-sentence
+  input: Tôi không biết phải giải thích thế nào cho đúng về chuyện đã xảy ra đêm đó
+    trong căn nhà cũ kỹ của bà ngoại ở cuối con hẻm nhỏ.
+  expect_severity: fail
+  expect_rule: sentence_length
+- id: s05
+  category: long-sentence
+  input: Anh ta bước đi chậm rãi trên con đường vắng lặng giữa những hàng cây cổ thụ
+    cao vút phủ bóng xuống một vùng đất
+  expect_severity: warn
+  expect_rule: sentence_length_warn
+- id: s06
+  category: long-sentence
+  input: Họ cùng nhau nhìn về phía chân trời xa xa nơi mặt trời đang dần lặn xuống
+    sau những dãy núi trập trùng im lìm và tĩnh lặng như đang chờ đợi một điều gì
+    đó.
+  expect_severity: fail
+  expect_rule: sentence_length
+- id: k01
+  category: digit-khó
+  input: số điện thoại 0901234567
+  expected_contains:
+  - chín trăm lẻ một triệu
+- id: k02
+  category: digit-khó
+  input: căn nhà số 1234
+  expected_contains:
+  - một nghìn hai trăm ba mươi tư
+- id: k03
+  category: digit-khó
+  input: lô đất 567890 mét vuông
+  expected_contains:
+  - năm trăm sáu mươi bảy nghìn
+- id: m01
+  category: mixed
+  input: Vào khoảng 10h30 tối năm 1995, bà bán được 200k.
+  expected_contains:
+  - mười giờ ba mươi
+  - một chín chín năm
+  - hai trăm nghìn
+- id: m02
+  category: mixed
+  input: từ 2020 đến 2024, giá tăng 15%
+  expected_contains:
+  - hai không hai không
+  - mười lăm phần trăm
+- id: m03
+  category: mixed
+  input: chương IV, trang 3,14 phần trăm
+  expected_contains:
+  - bốn
+  - ba phẩy mười bốn

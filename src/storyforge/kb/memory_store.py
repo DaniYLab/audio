@@ -74,14 +74,17 @@ class InMemoryKnowledgeStore:
                 self._chunks[chunk.chunk_id] = chunk
             self._source_hashes[prepared.source_id] = prepared.content_hash
             self._alias.save()
-            self._summarize_best_effort(transcript)
+            prepared.summary_generated = self._summarize_best_effort(transcript)
+            for chunk in prepared.chunks:
+                chunk.metadata["license"] = prepared.license
         return report_from(prepared, status)
 
-    def _summarize_best_effort(self, transcript: Transcript) -> None:
+    def _summarize_best_effort(self, transcript: Transcript) -> bool:
         """M2-V2 mirror of the Qdrant path: only for fresh ingests, and a
-        failing summarizer never fails the ingest."""
-        if self._summarizer is None and not self._kb.episode_summary_enabled:
-            return
+        failing summarizer never fails the ingest. Returns True when summary
+        generated and stamped."""
+        if self._summarizer is None and not self._kb.episode_summary:
+            return False
         summarizer = self._summarizer
         if summarizer is None:
             from storyforge.kb.episode_summary import LLMEpisodeSummarizer
@@ -89,14 +92,13 @@ class InMemoryKnowledgeStore:
             summarizer = LLMEpisodeSummarizer(self._settings, self._universe_id)
         try:
             summary = summarizer.summarize(transcript)
-            # The store owns universe stamping — a summarizer that guesses
-            # the universe must not write outside this store's scope.
             if summary.universe_id != self._universe_id:
                 summary = summary.model_copy(update={"universe_id": self._universe_id})
             self._summaries.save(summary)
             self.summaries_saved.append(transcript.source.id)
+            return True
         except Exception:
-            pass
+            return False
 
     # -- search ----------------------------------------------------------------
 

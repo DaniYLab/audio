@@ -184,7 +184,8 @@ class QdrantKnowledgeStore:
             self._ensure_collection(dense_dim=len(embeddings[0].dense) if embeddings else None)
             self._write_points(prepared.chunks, embeddings)
             self._alias.save()  # step 7: persist pending entities
-            self._summarize_best_effort(transcript)
+            prepared.summary_generated = self._summarize_best_effort(transcript)
+            self._stamp_license(prepared)
             logger.info(
                 "kb ingest",
                 source=prepared.source_id,
@@ -197,11 +198,12 @@ class QdrantKnowledgeStore:
         except Exception as exc:
             raise _translate_error(exc) from exc
 
-    def _summarize_best_effort(self, transcript: Transcript) -> None:
+    def _summarize_best_effort(self, transcript: Transcript) -> bool:
         """M2-V2: 1 LLM call per fresh source. Best-effort — a failed summary
-        never fails the ingest (transcript is DONE regardless)."""
-        if self._summarizer is None and not self._kb.episode_summary_enabled:
-            return
+        never fails the ingest (transcript is DONE regardless). Returns True
+        when a summary was generated and stamped onto the chunk payload."""
+        if self._summarizer is None and not self._kb.episode_summary:
+            return False
         summarizer = self._summarizer
         if summarizer is None:
             from storyforge.kb.episode_summary import LLMEpisodeSummarizer
@@ -214,13 +216,55 @@ class QdrantKnowledgeStore:
             if summary.universe_id != self._universe_id:
                 summary = summary.model_copy(update={"universe_id": self._universe_id})
             self._summaries.save(summary)
+            self._stamp_source_summary(transcript.source.id, summary)
             logger.info("episode summary saved", source=transcript.source.id)
+            return True
         except Exception as exc:
             logger.warning(
                 "episode summary failed (ingest continues)",
                 source=transcript.source.id,
                 error=str(exc),
             )
+            return False
+
+    def _stamp_source_summary(self, source_id: str, summary: object) -> None:
+        """M2 §5.2: ride ``source_summary`` on every chunk of the source."""
+        from qdrant_client import models
+
+        from storyforge.kb.episode_summary import summary_text
+
+        self._client.set_payload(
+            collection_name=self._collection,
+            payload={"source_summary": summary_text(summary)},  # type: ignore[arg-type]
+            points=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="source_id", match=models.MatchValue(value=source_id)
+                        )
+                    ]
+                )
+            ),
+        )
+
+    def _stamp_license(self, prepared: object) -> None:
+        """M3 §8.3: record the source license on every chunk payload."""
+        from qdrant_client import models
+
+        source_id = prepared.source_id  # type: ignore[attr-defined]
+        self._client.set_payload(
+            collection_name=self._collection,
+            payload={"license": prepared.license},  # type: ignore[attr-defined]
+            points=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="source_id", match=models.MatchValue(value=source_id)
+                        )
+                    ]
+                )
+            ),
+        )
 
     def _stored_hash(self, source_id: str) -> str | None:
         from qdrant_client import models

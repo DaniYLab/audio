@@ -102,6 +102,66 @@ class IngestReport(BaseModel):
     chunks_written: int
     entities_new: int  # pending_review — never auto-merged
     entities_pending: int
+    # M2 §5.2: True when the per-source "notable moments" summary was
+    # generated (or already present) during this ingest.
+    summary_generated: bool = False
+    # M3 §8.3: True when the source carries license=unknown — publish warning.
+    license_warning: bool = False
+
+
+# --- contract freeze (M3 §0 — approved by m3_design.md P1) -------------------
+#
+# The fact ledger is "the world of the written story", kept strictly apart
+# from the KB ("the world of the sources"). Reviewer pass and compiler both
+# consume these models; adding/removing fields = CR through ARCH.
+
+
+class FactOrigin(StrEnum):
+    CITED = "cited"  # traceable to a KB chunk (chunk_refs non-empty)
+    INFERRED = "inferred"  # LLM interpretation of cited facts
+    INVENTED = "invented"  # writer invention (allowed in loose mode)
+
+
+class FactKind(StrEnum):
+    CHARACTER = "character"
+    EVENT = "event"
+    SETTING = "setting"
+    RELATION = "relation"
+    ITEM = "item"
+
+
+class Fact(BaseModel):
+    """One established fact of the story world, per episode."""
+
+    fact_id: str  # "f0001" — stable, readable, unique within a universe
+    kind: FactKind
+    subject: str  # normalized through the KB alias table (one table, two worlds)
+    statement: str  # single simple declarative sentence, past tense
+    origin: FactOrigin
+    chunk_refs: list[str] = Field(default_factory=list)  # required when origin=CITED
+    episode_id: str  # episode that established the fact
+    scene_id: str | None = None
+    superseded_by: str | None = None  # retcon pointer — never delete
+    extracted_by: Literal["llm", "human", "facts_used"] = "llm"
+
+    def model_post_init(self, __context: object) -> None:
+        if self.origin is FactOrigin.CITED and not self.chunk_refs:
+            raise ValueError("origin=cited requires non-empty chunk_refs")
+
+
+class ConflictVerdict(StrEnum):
+    NO_CONFLICT = "no_conflict"  # duplicate or complementary fact
+    CONFLICT = "conflict"  # unintentional contradiction → fix the draft
+    TWIST_OK = "twist_ok"  # beat declared intent=twist → supersede is valid
+
+
+class ConflictReport(BaseModel):
+    """Result of checking one candidate fact against the live ledger."""
+
+    candidate: Fact
+    conflicts: list[Fact] = Field(default_factory=list)  # live facts it hits
+    verdict: ConflictVerdict = ConflictVerdict.NO_CONFLICT
+    reason: str = ""
 
 
 # --- writer-facing facade (NOT part of the store protocol) ------------------
@@ -150,8 +210,13 @@ class KnowledgeStore(Protocol):
 
 __all__ = [
     "CitedPassage",
+    "ConflictReport",
+    "ConflictVerdict",
     "EntityFactLine",
     "EntityFacts",
+    "Fact",
+    "FactKind",
+    "FactOrigin",
     "IngestReport",
     "KnowledgeBrief",
     "KnowledgeStore",

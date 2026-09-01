@@ -56,6 +56,14 @@ class KnowledgeBaseError(StoryForgeError):
     """Failed to index or query the knowledge base."""
 
 
+class LedgerCorruptedError(StoryForgeError):
+    """A fact-ledger episode file failed validation (M3-V1).
+
+    The loader skips the corrupt episode with a warning — one bad file must
+    never fail the whole universe (FACT_LEDGER_DESIGN.md §7).
+    """
+
+
 class StoryGenerationError(StoryForgeError):
     """LLM story generation failed or produced unusable output."""
 

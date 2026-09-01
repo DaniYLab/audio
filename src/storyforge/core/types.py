@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field, field_validator
 
 SourceId = str  # e.g. YouTube video id or local-file slug
 
+License = Literal["cc0", "cc_by", "owned", "permission", "unknown"]  # M3 §8.3
+
 
 def utc_now() -> datetime:
     return datetime.now(tz=UTC)
@@ -30,6 +32,7 @@ class SourceRef(BaseModel):
     title: str | None = None
     channel: str | None = None
     duration_seconds: float | None = None
+    license: License = "unknown"  # M3 §8.3: ingest --license, default unknown
     ingested_at: datetime = Field(default_factory=utc_now)
 
 
@@ -114,6 +117,10 @@ class StoryBeat(BaseModel):
     summary: str
     characters: list[str] = Field(default_factory=list)
     image_hint: str = ""  # visual scene description used by the imaging stage
+    # M3 §0 contract freeze: declared plot twist. When "twist", the reviewer
+    # treats contradictions within this beat as intentional character
+    # development (TWIST_OK), not hallucination.
+    intent: Literal["normal", "twist"] = "normal"
 
 
 class StoryScene(BaseModel):
@@ -138,6 +145,9 @@ class NarrationClip(BaseModel):
     audio_path: Path
     duration_seconds: float
     char_count: int
+    # M2-D1 §1.1: the normalized text actually sent to TTS (subtitles keep the
+    # original narration). Used for audit/debug of normalization behavior.
+    normalized_text: str | None = None
 
 
 class Illustration(BaseModel):
@@ -160,6 +170,29 @@ class VideoResult(BaseModel):
     duration_seconds: float
     scene_count: int
     ffmpeg_command_log: Path
+
+
+# --- M2-D4: prompt-eval harness ----------------------------------------------
+
+
+class DimensionScore(BaseModel):
+    """One rubric dimension score from the judge LLM (1.0-5.0, 0.5 steps)."""
+
+    dimension: Literal["grounding", "consistency", "pacing", "tts_ready", "visual", "hook"]
+    score: float  # 1.0-5.0, step 0.5
+    evidence: str  # quoted passage as evidence
+
+
+class StoryEval(BaseModel):
+    """Judge verdict for one scene (or the whole episode when scene_id="episode")."""
+
+    prompt_version: int
+    project: str
+    scene_id: str  # "episode" when scoring the whole story
+    scores: list[DimensionScore]
+    total: float  # mean of 6 dimensions * 20 -> 0..100 scale
+    judge_model: str
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class StageStatus(StrEnum):

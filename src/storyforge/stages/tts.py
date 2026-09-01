@@ -10,7 +10,7 @@ from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import TTSError
 from storyforge.core.logging import get_logger
 from storyforge.core.types import NarrationClip, Story
-from storyforge.normalize import TextNormalizer
+from storyforge.textnorm import TextNormalizer
 
 logger = get_logger(__name__)
 
@@ -33,11 +33,13 @@ class TTSStage(Stage):
 
         clips: list[NarrationClip] = []
         for scene in self.story.scenes:
-            narration = (
-                normalizer.normalize(scene.narration_text)
-                if normalizer is not None
-                else scene.narration_text
-            )
+            narration = scene.narration_text
+            normalized_text: str | None = None
+            if normalizer is not None:
+                result = normalizer.normalize(scene.narration_text)
+                narration = result.normalized
+                normalized_text = result.normalized
+
             out_path = ctx.store.dir("05_tts") / f"{scene.scene_id}.mp3"
             if out_path.exists() and not force:
                 from storyforge.providers.tts import probe_duration
@@ -50,6 +52,7 @@ class TTSStage(Stage):
                             str(out_path), ctx.settings.video.ffprobe_bin
                         ),
                         char_count=len(narration),
+                        normalized_text=normalized_text,
                     )
                 )
                 continue

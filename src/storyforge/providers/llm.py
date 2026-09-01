@@ -7,6 +7,8 @@ this module loads and fills them. Never inline prompt text in code.
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -30,12 +32,72 @@ PROMPTS_DIR = (
     else Path("prompts")
 )
 
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+class PromptMeta:
+    """Frontmatter metadata attached to a prompt template (M2-D3 §3.1)."""
+
+    def __init__(
+        self,
+        version: int = 0,
+        changelog: str = "",
+        eval_ref: str | None = None,
+    ) -> None:
+        self.version = version
+        self.changelog = changelog
+        self.eval_ref = eval_ref
+
 
 def load_prompt(name: str) -> str:
+    """Load a prompt template (frontmatter stripped) as plain text."""
+    meta, template = load_prompt_with_meta(name)
+    return template
+
+
+def load_prompt_with_meta(name: str) -> tuple[PromptMeta, str]:
+    """Load a prompt template and its frontmatter metadata (M2-D3 §3.1).
+
+    Template files start with ``---`` frontmatter (version/changelog/eval_ref)
+    followed by the prompt body. Falls back to a version-0 meta when a
+    template predates versioning.
+    """
     path = PROMPTS_DIR / f"{name}.txt"
     if not path.exists():
         raise StoryGenerationError(f"prompt template not found: {path}")
-    return path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8")
+
+    match = _FRONTMATTER_RE.match(raw)
+    if match is None:
+        return PromptMeta(version=0, changelog=""), raw
+
+    import yaml
+
+    data = yaml.safe_load(match.group(1)) or {}
+    meta = PromptMeta(
+        version=int(data.get("version", 0)),
+        changelog=str(data.get("changelog", "")),
+        eval_ref=data.get("eval_ref"),
+    )
+    return meta, raw[match.end() :]
+
+
+def extract_json(text: str) -> dict[str, Any]:
+    """Parse the first JSON object out of an LLM response (M2-D3 §3.2.1).
+
+    LLMs frequently wrap JSON in markdown code fences; this strips them and
+    takes the substring from the first ``{`` to the last ``}``.
+    """
+    cleaned = re.sub(r"```(?:json)?", "", text).strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end == -1:
+        raise StoryGenerationError("judge response missing JSON", details={"response": text[:500]})
+    parsed = json.loads(cleaned[start : end + 1])
+    if not isinstance(parsed, dict):
+        raise StoryGenerationError(
+            "judge response JSON is not an object", details={"response": text[:500]}
+        )
+    return parsed
 
 
 def fill_prompt(template: str, values: dict[str, Any]) -> str:
@@ -135,9 +197,18 @@ class StoryWriter:
         return self._parse_beats(response), user
 
     def generate_scene(
-        self, config: StoryConfig, beat: StoryBeat, brief: KnowledgeBrief
+        self,
+        config: StoryConfig,
+        beat: StoryBeat,
+        brief: KnowledgeBrief,
+        *,
+        lint_feedback: str | None = None,
     ) -> tuple[StoryScene, str]:
-        """Pass 2 — expand one beat using its scene palette."""
+        """Pass 2 — expand one beat using its scene palette.
+
+        ``lint_feedback`` (optional) appends deterministic lint feedback to the
+        prompt so a regenerated scene knows exactly what to fix (M2-D2 §2.3).
+        """
         template = load_prompt("scene")
         appearance_by_name = {c.name: c.appearance for c in config.characters}
         characters = (
@@ -156,15 +227,21 @@ class StoryWriter:
                 "art_style": config.style.art_style,
             },
         )
-        user = fill_prompt(
-            template,
-            {
-                "beat_summary": beat.summary,
-                "characters": characters,
-                "degraded": render_degraded(brief.reason) if brief.degraded else "",
-                "palette": render_palette(brief.palette),
-                "established": render_established([]),
-            },
+        feedback_section = (
+            f"\nLINT FEEDBACK (fix these before writing):\n{lint_feedback}" if lint_feedback else ""
+        )
+        user = (
+            fill_prompt(
+                template,
+                {
+                    "beat_summary": beat.summary,
+                    "characters": characters,
+                    "degraded": render_degraded(brief.reason) if brief.degraded else "",
+                    "palette": render_palette(brief.palette),
+                    "established": render_established([]),
+                },
+            )
+            + feedback_section
         )
         response = self._writer.chat(system, user)
         narration, image_prompt = self._parse_scene_response(response)

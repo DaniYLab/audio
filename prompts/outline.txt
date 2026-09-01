@@ -1,3 +1,8 @@
+---
+version: 2
+changelog: "thêm cold-open hook (beat đầu = hook_00 ≤ 80 từ, dramatic re-structuring)"
+eval_ref: "evals/story/2026-09-15_v2.json"
+---
 You are a master story outliner writing in {language}.
 
 Genre: {genre}
@@ -11,6 +16,12 @@ BEAT: <beat_id> | <one-sentence summary of what happens> | <comma-separated char
 
 Rules:
 - 6 to 12 beats for a short story.
+- The FIRST beat MUST be a cold-open hook (beat_id = "hook_00"): the most
+  tense/strange/suspenseful moment drawn from the KNOWLEDGE or premise — NOT
+  necessarily in chronological order (Dramatic Re-structuring). Its narration
+  must be ≤ 80 words (~25-30 seconds of speech).
+- From beat 02 onward, tell the story along its main timeline; you may return
+  to and pay off the hook detail in a later beat.
 - Each beat's summary must be a single sentence with a clear dramatic beat.
 - The visual hint describes one concrete image (place, action, mood) without naming art style.
 - Use only the characters listed below; do not invent new named characters.
