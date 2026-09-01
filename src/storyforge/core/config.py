@@ -82,6 +82,18 @@ class KnowledgeSettings(BaseModel):
     allowed_licenses: list[str] = Field(default_factory=list)
 
 
+class LedgerSettings(BaseModel):
+    """Fact-ledger behaviour (M3 §1, M4-B4 LLM arbiter)."""
+
+    # M4-B4: escalate to an LLM arbiter when rule-based conflict detection is
+    # uncertain (same slot, different statement, ambiguous negation). Off by
+    # default until a rule-based baseline exists (AC4). Env:
+    # SF__LEDGER__ARBITER_ENABLED.
+    arbiter_enabled: bool = False
+    # Which model arbitrates (default: SF__LLM__WRITER_MODEL).
+    arbiter_model: str | None = None
+
+
 class TTSSettings(BaseModel):
     engine: Literal["edge", "elevenlabs"] = "edge"
     rate: str = "+0%"
@@ -116,6 +128,12 @@ class VideoSettings(BaseModel):
     encoder: Literal["auto", "libx264", "h264_nvenc", "h264_qsv"] = "auto"
 
 
+class StorySettings(BaseModel):
+    """M4-B1: deterministic style statistics (sentence/opener/repeat/para)."""
+
+    style_stats: bool = True  # SF__STORY__STYLE_STATS
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Vars look like SF__SECTION__KEY (see .env.example): prefix "SF__"
@@ -137,9 +155,11 @@ class Settings(BaseSettings):
     transcription: TranscriptionSettings = Field(default_factory=TranscriptionSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
+    ledger: LedgerSettings = Field(default_factory=LedgerSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
     imaging: ImagingSettings = Field(default_factory=ImagingSettings)
     video: VideoSettings = Field(default_factory=VideoSettings)
+    story: StorySettings = Field(default_factory=StorySettings)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Settings:

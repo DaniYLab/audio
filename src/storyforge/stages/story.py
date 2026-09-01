@@ -13,9 +13,11 @@ from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import StoryForgeError, StoryGenerationError
 from storyforge.core.logging import get_logger
 from storyforge.core.types import GroundingLevel, Story, StoryConfig, StoryScene
+from storyforge.guard import CheckpointDeltaGuard, GuardError
 from storyforge.kb.compiler import BriefCompiler
 from storyforge.lint import LintIssue, LintReport, lint_scene
 from storyforge.providers.knowledge import build_universe_store
+from storyforge.stylestat import StyleStatsTracker
 from storyforge.textnorm import TextNormalizer
 
 logger = get_logger(__name__)
@@ -25,6 +27,10 @@ def _lint_feedback_text(issues: list[LintIssue]) -> str:
     """One-line-per-issue feedback string embedded in the retry prompt."""
     lines = [f"- [{i.severity}] {i.rule}: {i.suggestion or i.excerpt}" for i in issues]
     return "\n".join(lines)
+
+
+def _guard_feedback_text(exc: GuardError) -> str:
+    return f"[ARTIFACT GUARD] {str(exc)} — write something different"
 
 
 class StoryStage(Stage):
@@ -64,42 +70,98 @@ class StoryStage(Stage):
         lint_report = LintReport()
         retry_prompts: list[dict[str, object]] = []
         quality_flags: set[str] = set()
+        track_style = ctx.settings.story.style_stats
+        stylestat = StyleStatsTracker() if track_style else None
+        guard = CheckpointDeltaGuard()
+
+        # Build baseline digests from a previously existing story (resume).
+        if story_path.exists():
+            try:
+                existing = Story.model_validate_json(story_path.read_text(encoding="utf-8"))
+                for scene in existing.scenes:
+                    guard.add_baseline(
+                        CheckpointDeltaGuard.digest(scene.narration_text, scene.image_prompt)
+                    )
+            except Exception:
+                pass  # best-effort — fresh run may have a stale artifact
+
         try:
             outline, outline_prompt = writer.generate_outline(self.config, brief)
             prompt_rows.append({"section": "outline", "prompt": outline_prompt})
             scenes: list[StoryScene] = []
             for beat in outline:
                 brief = compiler.update(brief, beat)
-                scene, scene_prompt = writer.generate_scene(self.config, beat, brief)
-                # M2-D2 §2.3: lint after drafting; regenerate once on fail.
+
+                def _retry_feedback(e: GuardError | None, issues: list[LintIssue]) -> str:
+                    parts = []
+                    if e is not None:
+                        parts.append(_guard_feedback_text(e))
+                    if issues:
+                        parts.append("LINT: " + _lint_feedback_text(issues))
+                    return "\n".join(parts)
+
+                style_stats_text = stylestat.render() if stylestat else None
+                scene, scene_prompt = writer.generate_scene(
+                    self.config, beat, brief, style_stats=style_stats_text
+                )
+
+                # M4-B3: guard check — reject duplicate/unwritten scenes.
+                guard_error: GuardError | None = None
+                try:
+                    guard.check(
+                        CheckpointDeltaGuard.digest(scene.narration_text, scene.image_prompt)
+                    )
+                except GuardError as exc:
+                    guard_error = exc
+                    logger.warning("guard fail", scene=scene.scene_id, error=str(exc))
+
+                # M2-D2 §2.3: lint after drafting.
                 issues = lint_scene(scene, normalizer)
                 lint_report.issues.extend(issues)
                 fails = [i for i in issues if i.severity == "fail"]
-                if fails:
+
+                must_retry = guard_error is not None or fails
+                if must_retry:
                     retried_scene, retried_prompt = writer.generate_scene(
                         self.config,
                         beat,
                         brief,
-                        lint_feedback=_lint_feedback_text(fails),
+                        lint_feedback=_retry_feedback(guard_error, fails),
+                        style_stats=style_stats_text,
                     )
                     retry_prompts.append(
                         {
                             "scene": scene.scene_id,
                             "prompt": retried_prompt,
-                            "feedback": _lint_feedback_text(fails),
+                            "feedback": _retry_feedback(guard_error, fails),
                         }
                     )
+                    # Clear the guard error and re-check the retried scene.
+                    guard_error = None
+                    try:
+                        guard.check(
+                            CheckpointDeltaGuard.digest(
+                                retried_scene.narration_text, retried_scene.image_prompt
+                            )
+                        )
+                    except GuardError as exc:
+                        guard_error = exc
+                        logger.warning("guard still fails after retry", scene=scene.scene_id)
+
                     issues_after = lint_scene(retried_scene, normalizer)
                     lint_report.issues.extend(issues_after)
-                    if any(i.severity == "fail" for i in issues_after):
-                        # Still failing → flag, don't block (loose).
+                    if guard_error is not None or any(i.severity == "fail" for i in issues_after):
                         quality_flags.add(scene.scene_id)
                         logger.warning(
-                            "scene still fails lint after retry",
+                            "scene still fails after retry",
                             scene=scene.scene_id,
+                            guard_error=guard_error is not None,
                         )
                     else:
                         scene = retried_scene
+
+                if stylestat:
+                    stylestat.track(scene.narration_text)
                 scenes.append(scene)
                 prompt_rows.append({"section": f"scene:{beat.beat_id}", "prompt": scene_prompt})
         except StoryForgeError:
@@ -109,10 +171,10 @@ class StoryStage(Stage):
                 "story generation failed", details={"error": str(exc)}
             ) from exc
 
-        # Block on persistent lint failures only in strict mode.
+        # Block on persistent lint / guard failures only in strict mode.
         if quality_flags and self.config.grounding is GroundingLevel.STRICT:
             raise StoryGenerationError(
-                "story failed lint in strict mode",
+                "story failed lint/guard in strict mode",
                 details={"scenes": sorted(quality_flags)},
             )
 
@@ -123,5 +185,13 @@ class StoryStage(Stage):
         ctx.store.write_jsonl(
             ctx.store.dir("04_story") / "prompts_used" / "retry_scenes.jsonl", retry_prompts
         )
-        logger.info("story generated", scenes=len(scenes), title=self.config.title)
+        if stylestat:
+            stats = stylestat.summarize()
+            ctx.store.write_model(ctx.store.dir("04_story") / "style_stats.json", stats)
+        logger.info(
+            "story generated",
+            scenes=len(scenes),
+            title=self.config.title,
+            style_stats=stylestat is not None,
+        )
         return story

@@ -205,11 +205,14 @@ class StoryWriter:
         brief: KnowledgeBrief,
         *,
         lint_feedback: str | None = None,
+        style_stats: str | None = None,
     ) -> tuple[StoryScene, str]:
         """Pass 2 — expand one beat using its scene palette.
 
         ``lint_feedback`` (optional) appends deterministic lint feedback to the
         prompt so a regenerated scene knows exactly what to fix (M2-D2 §2.3).
+        ``style_stats`` (M4-B1) injects per-episode writing statistics so the
+        writer avoids repeating patterns.
         """
         template = load_prompt("scene")
         appearance_by_name = {c.name: c.appearance for c in config.characters}
@@ -241,6 +244,7 @@ class StoryWriter:
                     "degraded": render_degraded(brief.reason) if brief.degraded else "",
                     "palette": render_palette(brief.palette),
                     "established": render_established_facts(brief.established),
+                    "style_stats": style_stats or "",
                 },
             )
             + feedback_section

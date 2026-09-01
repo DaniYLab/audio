@@ -1,7 +1,7 @@
 ---
-version: 2
-changelog: "thêm SCENE PALETTE + ESTABLISHED sections; narration ≤ 250 từ"
-eval_ref: "evals/story/2026-09-15_v2.json"
+version: 3
+changelog: "M4-B1: inject working_memory.style_stats; hook scene ≤80 từ"
+eval_ref: "evals/story/2026-09-15_v3.json"
 ---
 You are a story writer writing narration in {language}.
 
@@ -16,6 +16,8 @@ Write ONE scene expanding the beat below. Output exactly two sections:
    description of the scene (subjects, action, environment, lighting) suitable
    for an image generator. Describe characters by their fixed appearance, not
    by name alone.
+
+{style_stats}
 
 BEAT SUMMARY: {beat_summary}
 CHARACTERS IN SCENE: {characters}

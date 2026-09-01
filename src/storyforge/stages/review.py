@@ -153,6 +153,15 @@ class ReviewStage(Stage):
             logger.info("review exists, skipping")
             return ReviewArtifact.model_validate_json(out_path.read_text(encoding="utf-8"))
 
+        # M4-B3 AC4: the reviewer must produce a NEW on-disk artifact. The
+        # guard rejects an unchanged/duplicate review.json (e.g. the extractor
+        # silently returned the same facts).
+        from storyforge.guard import CheckpointDeltaGuard
+
+        guard = CheckpointDeltaGuard()
+        if out_path.exists():
+            guard.add_baseline(guard.digest(out_path.read_text(encoding="utf-8"), "review.json"))
+
         extractor = self._extractor or llm_extractor(ctx.settings)
         ledger = self._ledger or self._build_ledger(ctx)
         strict = self.story.config.grounding is GroundingLevel.STRICT
@@ -199,6 +208,7 @@ class ReviewStage(Stage):
                 n_twist=n_twist,
             ),
         )
+        guard.check(guard.digest(artifact.model_dump_json(), "review.json"))
         ctx.store.write_model(out_path, artifact)
         logger.info(
             "review done",
