@@ -1,7 +1,7 @@
 ---
-version: 2
-changelog: "thêm cold-open hook (beat đầu = hook_00 ≤ 80 từ, dramatic re-structuring)"
-eval_ref: "evals/story/2026-09-15_v2.json"
+version: 3
+changelog: "M3-W1: add [INVENTED CÁC TẬP TRƯỚC] section from ledger"
+eval_ref: "evals/story/2026-09-15_v3.json"
 ---
 You are a master story outliner writing in {language}.
 
@@ -41,6 +41,9 @@ TARGET LENGTH (words): {target_words}
 
 [ESTABLISHED — sự kiện đã thiết lập ở các tập trước, KHÔNG mâu thuẫn]
 {established}
+
+[INVENTED CÁC TẬP TRƯỚC — vẫn là canon của truyện]
+{invented}
 
 [UNKNOWN — không có dữ liệu, được phép sáng tạo]
 {unknown}

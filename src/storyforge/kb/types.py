@@ -176,6 +176,9 @@ class KnowledgeBrief(BaseModel):
     unknown_entities: list[str] = Field(default_factory=list)
     degraded: bool = False
     reason: str | None = None
+    # M3-W1: facts from the episode ledger — injected at build/update time.
+    established: list[Fact] = Field(default_factory=list)  # origin=cited|inferred
+    invented: list[Fact] = Field(default_factory=list)     # origin=invented
 
 
 # --- protocol ---------------------------------------------------------------

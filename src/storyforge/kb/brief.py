@@ -7,7 +7,7 @@ this module is the only place that knows how to format them (KNOWLEDGE_BASE_DESI
 
 from __future__ import annotations
 
-from storyforge.kb.types import CitedPassage, EntityFacts
+from storyforge.kb.types import CitedPassage, EntityFacts, Fact, FactOrigin
 
 
 def render_theme(theme: list[CitedPassage]) -> str:
@@ -52,6 +52,39 @@ def render_established(facts: list[str]) -> str:
     if not facts:
         return "(no established facts)"
     return "\n".join(f"- {fact}" for fact in facts)
+
+
+def render_established_facts(established: list[Fact]) -> str:
+    """Render ledger facts as the [ESTABLISHED] prompt section (M3-W1).
+
+    Empty ledger -> empty string so the caller omits the section entirely
+    (the compiler never renders a bare header for an empty ledger).
+    """
+    if not established:
+        return ""
+    lines = [
+        f"- ({fact.episode_id}) {fact.statement}" + _origin_note(fact)
+        for fact in established
+    ]
+    return "[ESTABLISHED — sự kiện đã thiết lập, KHÔNG mâu thuẫn]\n" + "\n".join(lines)
+
+
+def render_invented_facts(invented: list[Fact]) -> str:
+    """Render prior invented facts as the [INVENTED CÁC TẬP TRƯỚC] section."""
+    if not invented:
+        return ""
+    lines = [
+        f"- ({fact.episode_id}) {fact.statement}" + _origin_note(fact) for fact in invented
+    ]
+    return "[INVENTED CÁC TẬP TRƯỚC — vẫn là canon của truyện]\n" + "\n".join(lines)
+
+
+def _origin_note(fact: Fact) -> str:
+    if fact.origin is FactOrigin.INVENTED:
+        return "  ← invented"
+    if fact.origin is FactOrigin.CITED and fact.chunk_refs:
+        return f"  ← cited ({', '.join(fact.chunk_refs[:3])})"
+    return ""
 
 
 def render_degraded(reason: str | None) -> str:

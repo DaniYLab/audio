@@ -88,6 +88,7 @@ class TTSSettings(BaseModel):
     pitch: str = "+0Hz"
     edge_voice: str = "vi-VN-NamMinhNeural"
     normalize_text: bool = True  # M2-W1: expand digits/abbreviations before TTS
+    cache_dir: Path = Path("data/cache/tts")  # M3-W3: audio cache by hash
     elevenlabs_api_key: SecretStr = SecretStr("")
     elevenlabs_voice_id: str = ""
 
@@ -96,6 +97,7 @@ class ImagingSettings(BaseModel):
     provider: Literal["fal", "openai"] = "fal"
     fal_key: SecretStr = SecretStr("")
     fal_model: str = "fal-ai/flux/schnell"
+    fal_ref_model: str = "fal-ai/flux-pro/kontext"  # M3-W4: reference-image model
     openai_model: str = "gpt-image-1"
     width: int = 1920
     height: int = 1080

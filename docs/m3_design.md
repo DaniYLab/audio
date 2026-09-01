@@ -117,6 +117,23 @@ Cho candidate, lấy `query(subject=candidate.subject, kind=candidate.kind)`:
 5. Verdict cuối: caller (reviewer stage) override CONFLICT → TWIST_OK khi
    beat `intent=twist`.
 
+#### 1.3.1. LLM Arbiter escalation (port từ ainovel-cli — không bắt buộc M3, opt-in)
+
+Khi rule-based không quyết được (cùng slot, khác statement, negation không
+rõ ràng, pattern không match slot nào nhưng từ khóa gợi ý mâu thuẫn):
+
+1. Gọi writer model (model rẻ) 1 lần/episode với prompt:
+   `prompts/arbiter_conflict.txt` — input: `[candidate fact] + [existing facts] + [beat context]`
+   → output: `{verdict: "conflict"|"twist_ok"|"no_conflict", reason: str}`
+2. Kết quả lưu vào `meta/conflict_verdicts.jsonl` (append-only, replayable):
+   `{episode_id, candidate_fact, existing_facts, verdict, arbiter_prompt, created_at}`
+3. Nếu arbitrator lỗi (exception/timeout) → fallback về rule-based verdict
+   (conservative: CONFLICT).
+4. **Điều kiện bật**: `SF__LEDGER__ARBITER_ENABLED=true` (mặc định false ở M3).
+
+`meta/conflict_verdicts.jsonl` tương đương decisions.jsonl của ainovel-cli
+— cho phép offline replay, regression test, và calibrate arbiter prompt.
+
 `query()` mặc định loại superseded; ordering: episode mới trước.
 
 ### 1.4. Validation & failure
@@ -165,6 +182,27 @@ story.json ──► [extract facts] ──► [find_conflicts mỗi fact] ─�
 2. **Twist false-positive (precision):** same fact nhưng beat có
    `intent=twist` → verdict PHẢI là TWIST_OK, KHÔNG CONFLICT.
    Cả 2 pass mới chấp nhận reviewer.
+
+### 2.3. Scene Artifact Guard — per-scene CheckpointDeltaGuard (port từ ainovel-cli)
+
+ainovel-cli dùng CheckpointDeltaGuard: worker chỉ được `end_turn` khi có
+artifact MỚI trên disk so với baseline — writer trả output trong chat là
+không tính. Port cho StoryForge (StoryStage + ReviewStage):
+
+- **Baseline**: lúc bắt đầu stage, đọc `scene` mới nhất đã có trong
+  `04_story/` (nếu resume) → ghi baseline `{scene_id, digest}`.
+- **Guard**: trước khi kết thúc mỗi scene, kiểm tra `04_story/story.json`
+  đã có scene mới với `scene_id` tăng hay chưa. Nếu writer chỉ trả text
+  trong chat mà không lưu qua store → reject + ném `GuardError` → StoryStage
+  retry 1 lần với prompt feedback, rồi fail.
+- **Digest**: sha256 của `narration_text + image_prompt` — phát hiện trùng
+  lặp (writer ghi cùng nội dung 2 lần).
+- **Liên kết reviewer**: reviewer cũng được guard — `save_review` phải tạo
+  artifact `review.json` mới, không chỉ trả verdict trong chat.
+
+Giống như âm thanh `check_consistency` trước `commit_chapter` trong
+ainovel-cli, guard đặt tại biên stage: đảm bảo **mọi fact có nguồn trên
+disk**, không bao giờ chỉ tồn tại trong context LLM.
 
 ---
 

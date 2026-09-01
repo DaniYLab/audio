@@ -15,20 +15,29 @@ from storyforge.core.types import GroundingLevel, StoryBeat, StoryConfig
 from storyforge.kb.types import (
     CitedPassage,
     EntityFacts,
+    FactOrigin,
     KnowledgeBrief,
     KnowledgeStore,
     SearchHit,
     SearchIntent,
     SearchQuery,
 )
+from storyforge.ledger.store import LedgerStore
 
 _SCENE_PALETTE_MAX = 4
+_INVENTED_CAP = 6
 
 
 class BriefCompiler:
-    def __init__(self, store: KnowledgeStore, config: StoryConfig) -> None:
+    def __init__(
+        self,
+        store: KnowledgeStore,
+        config: StoryConfig,
+        ledger: LedgerStore | None = None,
+    ) -> None:
         self._store = store
         self._config = config
+        self._ledger = ledger
         self._cited_chunk_ids: set[str] = set()
         self._degraded = False
         self._degrade_reason: str | None = None
@@ -62,6 +71,8 @@ class BriefCompiler:
                 brief.unknown_entities.append(name)
             else:
                 brief.dossiers.append(dossier)
+            # M3-W1: inject ledger facts for every character.
+            self._inject_ledger_facts(brief, name)
 
         if self._degraded:
             brief.degraded = True
@@ -81,6 +92,10 @@ class BriefCompiler:
             )
         )
         brief.palette = self._to_passages(hits, mark_cited=True)[:_SCENE_PALETTE_MAX]
+        # M3-W1: refresh ledger facts for characters in this beat.
+        for name in beat.characters:
+            self._inject_ledger_facts(brief, name)
+
         if self._degraded:
             brief.degraded = True
             brief.reason = self._degrade_reason
@@ -115,6 +130,21 @@ class BriefCompiler:
                 )
             )
         return passages
+
+    def _inject_ledger_facts(self, brief: KnowledgeBrief, name: str) -> None:
+        """Pull ledger facts for ``name`` and split by origin (M3-W1)."""
+        if self._ledger is None:
+            return
+        try:
+            facts = self._ledger.query(subject=name)
+        except Exception:
+            return  # ledger unavailable — degrade silently
+        for fact in facts:
+            if fact.origin is FactOrigin.INVENTED:
+                if len(brief.invented) < _INVENTED_CAP:
+                    brief.invented.append(fact)
+            else:
+                brief.established.append(fact)
 
     def _safe_search(self, query: SearchQuery) -> list[SearchHit]:
         try:

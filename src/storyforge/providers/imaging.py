@@ -14,9 +14,15 @@ from storyforge.core.types import Illustration
 
 @runtime_checkable
 class PromptImageGenerator(Protocol):
-    """Render a composed prompt to an image file."""
+    """Render a composed prompt to an image file.
 
-    def generate_from_prompt(self, prompt: str, out_path: str) -> Illustration: ...
+    ``reference_image`` (M3-W4) optionally anchors a character's appearance so
+    generations stay consistent across episodes.
+    """
+
+    def generate_from_prompt(
+        self, prompt: str, out_path: str, reference_image: Path | None = None
+    ) -> Illustration: ...
 
 
 def build_image_generator(settings: Settings) -> PromptImageGenerator:
@@ -36,16 +42,19 @@ class FalImageGenerator:
         if not settings.imaging.fal_key.get_secret_value():
             raise ImageGenerationError("SF__IMAGING__FAL_KEY is required")
 
-    def generate_from_prompt(self, prompt: str, out_path: str) -> Illustration:
+    def generate_from_prompt(
+        self, prompt: str, out_path: str, reference_image: Path | None = None
+    ) -> Illustration:
         import httpx
 
-        url = f"https://fal.run/{self._settings.imaging.fal_model}"
-        headers = {"Authorization": f"Key {self._settings.imaging.fal_key.get_secret_value()}"}
-        payload = {
+        settings = self._settings
+        url = f"https://fal.run/{settings.imaging.fal_model}"
+        headers = {"Authorization": f"Key {settings.imaging.fal_key.get_secret_value()}"}
+        payload: dict[str, object] = {
             "prompt": prompt,
             "image_size": {
-                "width": self._settings.imaging.width,
-                "height": self._settings.imaging.height,
+                "width": settings.imaging.width,
+                "height": settings.imaging.height,
             },
         }
 

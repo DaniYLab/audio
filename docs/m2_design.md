@@ -204,7 +204,25 @@ storyforge eval-story --project demo [--judge-model X]
    template mới `prompts/judge_story.txt`.
 3. Ghi `evals/story/<date>_v<prompt_version>.json`.
 
-#### 3.2.1. JSON parsing — chống markdown codeblock (bắt buộc, theo review)
+### 3.3. Judge prompt — mẫu từ editor.md của ainovel-cli (port pattern)
+
+Judge prompt (`prompts/judge_story.txt`) áp dụng các nguyên tắc từ editor 7-dimension:
+
+**a) Score 0-100, verdict tự suy (không để LLM tự điền pass/fail)**:
+- 0–39 → fail, 40–69 → warn, 70–100 → pass
+- LLM chỉ trả `score`, hệ thống suy `verdict` từ ngưỡng
+- Bắt buộc trích dẫn nguyên văn (`evidence`) làm bằng chứng cho mỗi chiều
+
+**b) Chiều aesthetic (chiều 6 hook) bắt buộc trích nguyên văn**:
+- Không chấp nhận kết luận chung chung kiểu "văn phong trôi chảy"
+- Phải trích tối thiểu 1 câu nguyên văn thể hiện vấn đề
+
+**c) StyleStats injection (see section 8)**:
+- Khi có `episodic_memory.style_stats`, judge phải tham chiếu:
+  "câu mở đầu quá dài (> 25 từ) — vi phạm ở chương/tập trước (style_stat: 3/5 scene)"
+- Không dùng làm fail tuyệt đối, chỉ dùng làm warn pattern
+
+### 3.4. JSON parsing — chống markdown codeblock (bắt buộc, theo review)
 
 LLM hay bọc JSON trong ```json ... ``` dù prompt có cấm. Parser bắt buộc:
 
@@ -222,7 +240,7 @@ Dùng chung cho mọi response trả JSON (judge, episode_summary, review_
 extract) — đặt trong `providers/llm.py` (private helper), không nhân bản
 logic parse ở từng module.
 
-### 3.3. Judge output schema (LLM phải trả JSON — parse giống `_parse_beats`)
+### 3.5. Judge output schema (LLM phải trả JSON — parse giống `_parse_beats`)
 
 ```python
 class DimensionScore(BaseModel):
@@ -244,7 +262,7 @@ class StoryEval(BaseModel):
 `tts_ready` dimension: judge NHẬN kèm kết quả lint (`lint_report.json`) —
 điểm này phải nhất quán với lint (fail lint → không cho 5.0).
 
-### 3.4. Judge prompt (`prompts/judge_story.txt`) — yêu cầu bắt buộc
+### 3.6. Judge prompt (`prompts/judge_story.txt`) — yêu cầu bắt buộc
 
 - Chấm từng chiều độc lập, trích evidence cho mỗi điểm.
 - Cấm điểm tròn suôn (khuyến khích dùng bước 0.5, bắt buộc evidence).
@@ -379,7 +397,54 @@ review chốt trước merge; danh sách trên là phân bổ bắt buộc.
 
 ---
 
-## 8. Thứ tự implement khuyến nghị (P2)
+## 8. StyleStats — deterministic style statistics (port từ ainovel-cli)
+
+### 8.1. Mục đích
+
+Tính thống kê phong cách bằng CODE (không LLM) để inject vào prompt của
+writer + judge, giúp:
+- Writer tự tránh lặp pattern (cấu trúc câu, mở đầu, kết thúc)
+- Judge chấm chiều TTS-ready và visual có số liệu định lượng
+- Phát hiện sớm lỗi phong cách xuyên suốt (cross-episode)
+
+### 8.2. Tính năng (phiên bản đầu)
+
+```python
+# src/storyforge/stylestat/tracker.py
+class StyleStatsTracker:
+    def observe(self, scene: StoryScene) -> None: ...
+    def compute(self) -> StyleStats: ...
+    def inject(self, brief: KnowledgeBrief) -> None: ...
+```
+
+Các thống kê ban đầu (deterministic, regex/code thuần, không LLM):
+
+| Stat | Phương pháp | Inject vào |
+|---|---|---|
+| `sentence_length_distribution` | đếm từ/câu (split `[.!?]`) | writer prompt + judge rubric |
+| `scene_opener_pattern` | 5 từ đầu scene → pattern (4 loại: dialogue/narrative/description/action) | judge chiều hook |
+| `ending_type` | 3 câu cuối → loại (cliffhanger/resolution/question) | writer prompt |
+| `paragraph_length_avg` | tokens/paragraph | writer prompt (TTS-ready) |
+| `repeated_phrases` | bigram tần suất cao > 3 lần/episode | judge chiều aesthetic |
+| `title_prefix_consistency` | prefix pattern qua các scene (nếu có) | judge |
+
+### 8.3. Tích hợp
+
+- **StoryStage**: sau mỗi scene, `stylestat.observe(scene)`. Trước scene N,
+  `stylestat.compute()` → inject vào `working_memory.style_stats` trong
+  writer prompt.
+- **Judge prompt**: khi có StyleStats → judge tham chiếu (mục 3.3c).
+- **Lưu trữ**: per-episode trong `04_story/style_stats.json`; cross-episode
+  accumulate trong `data/kb/<universe>/style_stats/` (append-only, tối đa
+  10 episode gần nhất).
+- **Zero LLM cost**: chỉ regex + counter.
+
+### 8.4. Entry point
+
+Mặc định tắt (bật qua `SF__STORY__STYLE_STATS=true`). Khi bật, chạy sau
+mỗi scene generation trong StoryStage, trước khi ghi artifact.
+
+## 9. Thứ tự implement khuyến nghị (P2)
 
 1. DEV2: M2-W1 TextNormalizer + dataset (song song được ngay — module độc
    lập theo quy tắc gối đầu).

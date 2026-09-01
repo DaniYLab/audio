@@ -28,7 +28,7 @@ from storyforge.core.config import Settings
 from storyforge.core.contracts import StageContext
 from storyforge.core.exceptions import StoryForgeError
 from storyforge.core.logging import configure_logging, get_logger
-from storyforge.core.types import StoryConfig
+from storyforge.core.types import StoryConfig, utc_now
 from storyforge.kb.types import KnowledgeStore, SearchIntent, SearchQuery
 
 app = typer.Typer(
@@ -137,7 +137,58 @@ def _execute_pipeline(
     ctx.mark_done("video", seconds=result.duration_seconds)
     store.save_manifest(manifest)
 
+    _check_alert(settings, project, manifest)
     console.print(f"[green]✓[/green] Video: {result.video_path}")
+
+
+# --- M3-W6: alert on repeated stage failure -----------------------------------
+
+
+def _check_alert(settings: Settings, project: str, manifest) -> None:
+    """Append an alert line when the same stage failed in the previous run too.
+
+    Reads the per-project failure history from the workspace; after 2
+    consecutive failures of the same stage, a line is appended to
+    ``data/alerts.md`` (M3-W6 §9.2). The counter resets on success.
+    """
+    from storyforge.core.types import StageStatus
+
+    failed = {
+        stage
+        for stage, record in manifest.stages.items()
+        if record.status is StageStatus.FAILED
+    }
+    history_path = Path(settings.workspace_dir) / project / ".failures.json"
+    history: dict[str, int] = {}
+    if history_path.exists():
+        import json
+
+        try:
+            history = json.loads(history_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            history = {}
+
+    for stage in failed:
+        history[stage] = history.get(stage, 0) + 1
+    # A fully-successful run resets the counters.
+    if not failed:
+        history = {}
+
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(
+        __import__("json").dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    alerts: list[str] = []
+    for stage, count in history.items():
+        if count >= 2:
+            alerts.append(f"[{utc_now().isoformat()}] project {project} stage {stage} fail ×{count}")
+    if alerts:
+        alerts_dir = Path("data")
+        alerts_dir.mkdir(parents=True, exist_ok=True)
+        with (alerts_dir / "alerts.md").open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(alerts) + "\n")
+        logger.warning("pipeline alert", project=project, alerts=alerts)
 
 
 @app.command()

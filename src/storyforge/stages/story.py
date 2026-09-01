@@ -33,6 +33,15 @@ class StoryStage(Stage):
     def __init__(self, config: StoryConfig) -> None:
         self.config = config
 
+    def _build_ledger(self, ctx: StageContext):
+        """Inject the universe ledger (M3-W1); None when no ledger exists yet."""
+        from storyforge.ledger.store import build_ledger
+
+        universe_dir = ctx.settings.knowledge.ledgers_dir / self.config.universe
+        if not universe_dir.exists():
+            return None
+        return build_ledger(universe_dir)
+
     def run(self, ctx: StageContext, *, force: bool = False) -> Story:
         from storyforge.providers.llm import build_writer
 
@@ -45,7 +54,8 @@ class StoryStage(Stage):
         ctx.store.write_model(ctx.store.dir("04_story") / "config.json", self.config)
 
         store = build_universe_store(ctx.settings, self.config.universe)
-        compiler = BriefCompiler(store, self.config)
+        ledger = self._build_ledger(ctx)
+        compiler = BriefCompiler(store, self.config, ledger=ledger)
         brief = compiler.build()
 
         writer = build_writer(ctx.settings)

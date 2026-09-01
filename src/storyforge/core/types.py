@@ -97,6 +97,9 @@ class StoryConfig(BaseModel):
     grounding: GroundingLevel = GroundingLevel.LOOSE
     premise: str = ""  # one-paragraph seed idea; may be empty for pure-KB stories
     source_query: str | None = None  # KB retrieval query; None = use premise only
+    # M3-W5: mood tag for the CC0 music bed (e.g. "warm", "tense", "sad").
+    # None = no music bed mixed into the final video.
+    music_mood: str | None = None
 
     @field_validator("universe")
     @classmethod

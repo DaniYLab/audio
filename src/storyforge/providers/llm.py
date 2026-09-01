@@ -19,7 +19,8 @@ from storyforge.core.types import StoryBeat, StoryConfig, StoryScene
 from storyforge.kb.brief import (
     render_degraded,
     render_dossiers,
-    render_established,
+    render_established_facts,
+    render_invented_facts,
     render_palette,
     render_theme,
     render_unknown,
@@ -189,7 +190,8 @@ class StoryWriter:
                 "degraded": render_degraded(brief.reason) if brief.degraded else "",
                 "theme": render_theme(brief.theme),
                 "dossiers": render_dossiers(brief.dossiers),
-                "established": render_established([]),
+                "established": render_established_facts(brief.established),
+                "invented": render_invented_facts(brief.invented),
                 "unknown": render_unknown(brief.unknown_entities),
             },
         )
@@ -238,7 +240,7 @@ class StoryWriter:
                     "characters": characters,
                     "degraded": render_degraded(brief.reason) if brief.degraded else "",
                     "palette": render_palette(brief.palette),
-                    "established": render_established([]),
+                    "established": render_established_facts(brief.established),
                 },
             )
             + feedback_section

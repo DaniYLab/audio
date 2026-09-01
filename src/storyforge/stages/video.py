@@ -26,9 +26,15 @@ logger = get_logger(__name__)
 class VideoStage(Stage):
     name = "video"
 
-    def __init__(self, clips: list[NarrationClip], illustrations: list[Illustration]) -> None:
+    def __init__(
+        self,
+        clips: list[NarrationClip],
+        illustrations: list[Illustration],
+        music_mood: str | None = None,
+    ) -> None:
         self.clips = clips
         self.illustrations = {i.scene_id: i for i in illustrations}
+        self.music_mood = music_mood
 
     def run(self, ctx: StageContext, *, force: bool = False) -> VideoResult:
         settings = ctx.settings.video
@@ -62,6 +68,7 @@ class VideoStage(Stage):
             "\n".join(f"file '{p.as_posix()}'" for p in segment_paths), encoding="utf-8"
         )
 
+        music_path = self._resolve_music(ctx)
         cmd = [
             settings.ffmpeg_bin,
             "-y",
@@ -74,8 +81,17 @@ class VideoStage(Stage):
             "-i",
             _audio_concat_arg(self.clips),
         ]
+        if music_path is not None:
+            cmd += ["-i", str(music_path)]
+
+        vf_arg: str | None = None
         if settings.burn_subtitles:
-            cmd += ["-vf", f"subtitles={srt_path.as_posix()}"]
+            vf_arg = f"subtitles={srt_path.as_posix()}"
+        af_arg = self._audio_filter(ctx, music_path)
+        if settings.burn_subtitles:
+            cmd += ["-vf", vf_arg]  # type: ignore[list-item]
+        if af_arg:
+            cmd += ["-af", af_arg]
         cmd += [
             "-c:v",
             "libx264",
@@ -196,6 +212,23 @@ class VideoStage(Stage):
             raise VideoAssemblyError(
                 "ffmpeg failed", details={"returncode": result.returncode, "stderr_tail": tail}
             )
+
+    def _resolve_music(self, ctx: StageContext) -> Path | None:
+        """M3-W5: resolve the CC0 music file for the configured mood, if any."""
+        if not self.music_mood:
+            return None
+        path = Path("assets/music_cc0") / f"{self.music_mood}.mp3"
+        return path if path.exists() else None
+
+    def _audio_filter(self, ctx: StageContext, music_path: Path | None) -> str | None:
+        """M3-W5 §9.1: FFmpeg filtergraph for background music mixing."""
+        if music_path is None:
+            return None
+        return (
+            "[1:a]aloop=loop=-1:size=2e+09,"
+            "afade=t=in:st=0:d=2,volume=0.15[bgm];"
+            "[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+        )
 
 
 def _audio_concat_arg(clips: list[NarrationClip]) -> str:
