@@ -12,12 +12,15 @@ stage needs from upstream artifacts), and calls Pipeline.run.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
     from storyforge.kb.alias import AliasStore
+    from storyforge.notify.webhook import WebhookDispatcher
+    from storyforge.queue import JobSpec
 
 import typer
 from rich.console import Console
@@ -893,6 +896,455 @@ def music(
     if lic_dir.exists():
         console.print(f"license info: {lic_dir}")
     console.print("[green]use:[/green] set StoryConfig.music_mood=<mood> in your story config")
+
+
+# --- M4-A4: YouTube upload (draft mode) ---------------------------------------
+
+
+@app.command()
+def publish(
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    draft: Annotated[
+        bool,
+        typer.Option("--draft", help="Upload as private (default)."),
+    ] = True,
+    publish_now: Annotated[
+        bool,
+        typer.Option(
+            "--publish",
+            help="Upload as public. Requires an explicit flag (AC4).",
+        ),
+    ] = False,
+    setup_oauth: Annotated[
+        bool,
+        typer.Option("--setup-oauth", help="Print the OAuth consent URL (AC2)."),
+    ] = False,
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Upload the final video to YouTube (private draft by default) — A4.
+
+    ``--draft`` (default) = ``privacyStatus: private``; ``--publish`` is the
+    only way to go public and requires credentials + upload_enabled=true.
+    """
+    from storyforge.core.artifacts import ArtifactStore
+    from storyforge.publish.receipt import (
+        PublishReceipt,
+        load_receipt,
+        save_receipt,
+        should_upload,
+    )
+    from storyforge.publish.youtube import (
+        YouTubeUploader,
+        YouTubeUploadError,
+        build_oauth_url,
+    )
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+
+    if setup_oauth:
+        console.print(
+            "Open this URL in a browser, authorize, then run:\n"
+            f"  {build_oauth_url(settings.publish.youtube_client_id)}\n"
+            "Save the refresh token to SF__PUBLISH__YOUTUBE_REFRESH_TOKEN."
+        )
+        return
+
+    if publish_now:
+        if not settings.publish.upload_enabled:
+            console.print(
+                "[red]✗[/red] --publish requires "
+                "SF__PUBLISH__UPLOAD_ENABLED=true (AC4 explicit gate)."
+            )
+            raise typer.Exit(code=1)
+        privacy: str = "public"
+    else:
+        privacy = "private"
+
+    store = ArtifactStore(settings.workspace_dir, project)
+    video_path = store.video_path()
+    if not video_path.exists():
+        console.print(f"[red]✗[/red] no final video yet: {video_path}")
+        raise typer.Exit(code=1)
+
+    # Idempotency (AC3): skip when the same file hash was already uploaded.
+    receipt_path = store.dir("07_video") / "publish.json"
+    if not should_upload(receipt_path, video_path, privacy):
+        receipt = load_receipt(receipt_path)
+        assert receipt is not None
+        console.print(f"[green]✓[/green] already uploaded: {receipt.url} ({receipt.privacy})")
+        return
+
+    # Build metadata from the stored story config.
+    from storyforge.core.types import Story
+    from storyforge.publish.metadata import build_metadata
+
+    story = store.read_model(store.story_path(), Story)
+    meta = build_metadata(
+        story.config, episode=1, total=1, template=settings.publish.metadata_template
+    )
+    meta.privacy = privacy  # type: ignore[assignment]
+
+    if settings.publish.upload_enabled is False and privacy == "private":
+        # Allow dry-run without credentials for private drafts.
+        console.print(
+            "[yellow]upload disabled (SF__PUBLISH__UPLOAD_ENABLED unset) — "
+            "writing receipt only (dry-run).[/yellow]"
+        )
+        file_hash = PublishReceipt.hash_file(video_path)
+        url = "https://youtu.be/dry-run"
+        receipt = PublishReceipt(
+            project=project, video_id="dry-run", privacy=privacy,
+            file_hash=file_hash, url=url,
+        )
+        save_receipt(receipt_path, receipt)
+        console.print(f"[green]✓[/green] dry-run receipt written to {receipt_path}")
+        return
+
+    uploader = YouTubeUploader(
+        token_path=settings.publish.token_path,
+        client_id=settings.publish.youtube_client_id,
+        client_secret=settings.publish.youtube_client_secret.get_secret_value(),
+        refresh_token=settings.publish.youtube_refresh_token.get_secret_value(),
+    )
+    thumbnail_candidate = store.dir("06_images") / "thumbnail.png"
+    thumbnail_path: Path | None = thumbnail_candidate if thumbnail_candidate.exists() else None
+    try:
+        video_id = uploader.upload(video_path, thumbnail_path, meta)
+    except YouTubeUploadError as exc:
+        console.print(f"[red]✗[/red] upload failed: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    file_hash = PublishReceipt.hash_file(video_path)
+    url = f"https://youtu.be/{video_id}"
+    receipt = PublishReceipt(
+        project=project, video_id=video_id, privacy=privacy,
+        file_hash=file_hash, url=url,
+    )
+    save_receipt(receipt_path, receipt)
+    console.print(f"[green]✓[/green] uploaded ({privacy}): {url}")
+    console.print(f"      receipt: {receipt_path}")
+
+
+# --- M5-V4: webhooks + usage export -------------------------------------------
+
+
+def _webhook_dispatcher(settings: Settings) -> WebhookDispatcher:
+    from storyforge.notify.webhook import WebhookDispatcher, WebhookStore
+
+    return WebhookDispatcher(WebhookStore(Path(settings.workspace_dir).parent / "webhooks"))
+
+
+webhooks_app = typer.Typer(
+    help="Webhook targets — add/list/remove/flush (M5-V4).",
+    no_args_is_help=True,
+)
+app.add_typer(webhooks_app, name="webhooks")
+
+
+@webhooks_app.command("add")
+def webhooks_add(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    url: Annotated[str, typer.Option(help="Webhook endpoint URL.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Register a webhook endpoint for a universe."""
+    from storyforge.notify.webhook import WebhookTarget
+
+    settings = _load_settings(config)
+    dispatcher = _webhook_dispatcher(settings)
+    dispatcher.store.add_target(WebhookTarget(universe_id=universe, url=url))
+    console.print(f"[green]✓[/green] webhook added for '{universe}': {url}")
+
+
+@webhooks_app.command("list")
+def webhooks_list(
+    universe: Annotated[str | None, typer.Option(help="Universe id (optional).")] = None,
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """List registered webhook endpoints."""
+    settings = _load_settings(config)
+    dispatcher = _webhook_dispatcher(settings)
+    targets = dispatcher.store.list_targets(universe)
+    if not targets:
+        console.print("[yellow]no webhooks registered[/yellow]")
+        return
+    table = Table(title=f"Webhooks — {universe or 'all universes'}")
+    table.add_column("universe")
+    table.add_column("url")
+    for t in targets:
+        table.add_row(t.universe_id, t.url)
+    console.print(table)
+
+
+@webhooks_app.command("remove")
+def webhooks_remove(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    url: Annotated[str, typer.Option(help="Webhook URL to remove.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Remove a webhook endpoint."""
+    settings = _load_settings(config)
+    dispatcher = _webhook_dispatcher(settings)
+    if not dispatcher.store.remove_target(universe, url):
+        console.print(f"[red]✗[/red] no matching webhook for '{universe}': {url}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/green] removed webhook: {url}")
+
+
+@webhooks_app.command("flush")
+def webhooks_flush(
+    universe: Annotated[str | None, typer.Option(help="Universe id (optional).")] = None,
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Send all due webhook deliveries."""
+    settings = _load_settings(config)
+    dispatcher = _webhook_dispatcher(settings)
+    delivered = dispatcher.flush()
+    console.print(f"[green]✓[/green] flushed {len(delivered)} delivery(ies)")
+
+
+@app.command()
+def usage_export(
+    universe: Annotated[str | None, typer.Option(help="Universe id filter.")] = None,
+    since: Annotated[str | None, typer.Option(help="ISO date (YYYY-MM-DD).")] = None,
+    out: Annotated[Path | None, typer.Option(help="Output path (default stdout).")] = None,
+    fmt: Annotated[
+        str, typer.Option(help="Output format: csv | jsonl.")
+    ] = "csv",
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Export per-stage usage from project manifests (M5-V4)."""
+    from datetime import datetime
+
+    from storyforge.notify.usage import (
+        collect_usage,
+        export_csv,
+        export_jsonl,
+    )
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+
+    since_dt = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            console.print(f"[red]✗[/red] invalid --since date: {since} (use YYYY-MM-DD)")
+            raise typer.Exit(code=1) from None
+
+    rows = collect_usage(Path(settings.workspace_dir), universe=universe, since=since_dt)
+    if not rows:
+        console.print("[yellow]no usage rows found[/yellow]")
+        return
+
+    if out is None:
+        # Print to console.
+        table = Table(title="Usage export")
+        table.add_column("project")
+        table.add_column("stage")
+        table.add_column("cost_usd")
+        table.add_column("api_calls")
+        for row in rows:
+            table.add_row(
+                str(row["project"]),
+                str(row["stage"]),
+                f"{float(row['cost_usd']):.4f}",
+                str(row["api_calls"]),
+            )
+        console.print(table)
+        return
+
+    if fmt == "jsonl":
+        export_jsonl(rows, out)
+    else:
+        export_csv(rows, out)
+    console.print(f"[green]✓[/green] {len(rows)} row(s) written to {out}")
+
+
+# --- M7-V3: analytics ingestion ------------------------------------------------
+
+
+analytics_app = typer.Typer(
+    help="Analytics — pull video stats/retention (M7-V3).",
+    no_args_is_help=True,
+)
+app.add_typer(analytics_app, name="analytics")
+
+
+@analytics_app.command("pull")
+def analytics_pull(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Pull stats + retention for every published video of a universe."""
+    from storyforge.analytics.ingest import AnalyticsIngestor
+    from storyforge.publish.youtube import YouTubeUploader
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    # Reuse the M4 OAuth token cache (access token refreshed on demand).
+    uploader = YouTubeUploader(
+        token_path=settings.publish.token_path,
+        client_id=settings.publish.youtube_client_id,
+        client_secret=settings.publish.youtube_client_secret.get_secret_value(),
+        refresh_token=settings.publish.youtube_refresh_token.get_secret_value(),
+    )
+    access_token = uploader._access_token()
+    ingestor = AnalyticsIngestor(
+        warehouse_dir=settings.analytics.warehouse_dir,
+        access_token=access_token,
+        cache_ttl_hours=settings.analytics.retention_cache_ttl_hours,
+    )
+    ingested = ingestor.ingest_all(universe, Path(settings.workspace_dir))
+    console.print(
+        f"[green]✓[/green] ingested {ingested} video(s) for universe '{universe}'"
+    )
+
+
+@analytics_app.command("scene-retention")
+def analytics_scene_retention(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Map a video's retention curve onto the project's scenes."""
+    from storyforge.analytics.ingest import (
+        AnalyticsIngestor,
+        map_retention_to_scenes,
+    )
+    from storyforge.core.artifacts import ArtifactStore
+    from storyforge.core.types import NarrationClip
+    from storyforge.publish.receipt import load_receipt
+
+    settings = _load_settings(config)
+    store = ArtifactStore(settings.workspace_dir, project)
+    receipt = load_receipt(store.dir("07_video") / "publish.json")
+    if receipt is None or receipt.video_id in ("", "dry-run"):
+        console.print("[yellow]no published video for this project[/yellow]")
+        return
+
+    ingestor = AnalyticsIngestor(warehouse_dir=settings.analytics.warehouse_dir)
+    curve = ingestor.load_retention(receipt.video_id)
+    if curve is None:
+        console.print("[yellow]no retention data pulled yet — run analytics pull[/yellow]")
+        return
+
+    clips = [
+        NarrationClip.model_validate_json(p.read_text(encoding="utf-8"))
+        for p in sorted(store.dir("05_tts").glob("*.json"))
+    ]
+    scenes = map_retention_to_scenes(curve, clips)
+    table = Table(title=f"Scene retention — {project}")
+    table.add_column("scene")
+    table.add_column("avg_view_pct")
+    for s in scenes:
+        table.add_row(s.scene_id, f"{s.avg_view_pct:.2%}")
+    console.print(table)
+
+
+# --- M4-A6: multi-worker queue -------------------------------------------------
+
+
+def _make_job_runner(
+    settings: Settings,
+) -> Callable[[JobSpec], tuple[bool, str | None]]:
+    """Return a ``run_one`` callback that executes the full pipeline."""
+
+    def run_one(job: JobSpec) -> tuple[bool, str | None]:
+        from storyforge.core.exceptions import StoryForgeError
+
+        try:
+            _execute_pipeline(
+                settings,
+                project=job.project,
+                story_config_path=Path(job.source_config),
+                urls=job.urls,
+                local_files=[Path(f) for f in job.local_files],
+                force=False,
+                only=None,
+            )
+            return True, None
+        except StoryForgeError as exc:
+            return False, str(exc)
+
+    return run_one
+
+
+@app.command()
+def worker(
+    config: Annotated[Path | None, typer.Option()] = None,
+    worker_id: Annotated[str | None, typer.Option(help="Worker id.")] = None,
+    loop: Annotated[
+        bool, typer.Option("--loop", help="Keep polling instead of one-shot.")
+    ] = False,
+    interval: Annotated[
+        int, typer.Option(help="Poll interval in --loop mode (seconds).")
+    ] = 30,
+) -> None:
+    """Claim and run one queue job (or poll forever with --loop) — M4-A6."""
+    from storyforge.queue import run_worker
+
+    settings = _load_settings(config)
+    if worker_id:
+        settings.queue.worker_id = worker_id
+    configure_logging(settings)
+    run_one = _make_job_runner(settings)
+    processed = run_worker(settings, run_one, loop=loop, interval_seconds=interval)
+    console.print(f"[green]✓[/green] worker processed {processed} job(s)")
+
+
+queue_app = typer.Typer(
+    help="Queue management — list, inspect, cancel (M4-A6).",
+    no_args_is_help=True,
+)
+app.add_typer(queue_app, name="queue")
+
+
+@queue_app.command("status")
+def queue_status(
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Show queue bucket counts."""
+    from storyforge.queue import QueueManager
+
+    settings = _load_settings(config)
+    manager = QueueManager(settings)
+    counts = manager.status()
+
+    table = Table(title=f"Queue — {manager.queue_dir}")
+    table.add_column("bucket")
+    table.add_column("count")
+    for bucket in ("queued", "processing", "done", "failed"):
+        table.add_row(bucket, str(counts[bucket]))
+    console.print(table)
+
+    # Print first 3 queued job names for convenience.
+    queued = manager.queued()
+    if queued:
+        console.print()
+        console.print("[bold]queued jobs:[/bold]")
+        for path in queued[:3]:
+            console.print(f"  {path.stem}")
+        if len(queued) > 3:
+            console.print(f"  … and {len(queued) - 3} more")
+
+
+@queue_app.command("cancel")
+def queue_cancel(
+    job_id: Annotated[str, typer.Argument(help="Job id to cancel.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Cancel a queued (not processing) job."""
+    from storyforge.queue import QueueManager
+
+    settings = _load_settings(config)
+    manager = QueueManager(settings)
+    if not manager.cancel(job_id):
+        console.print(f"[red]✗[/red] no queued job '{job_id}'")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/green] cancelled job '{job_id}'")
 
 
 @app.callback()

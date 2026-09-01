@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
 from storyforge.core.types import utc_now
 from storyforge.kb.types import ConflictReport, ConflictVerdict, Fact, FactKind
-from storyforge.ledger.loader import UniverseLedger, load_universe
+from storyforge.ledger.loader import EpisodeFile, UniverseLedger, load_universe
 
 _NEGATORS = ("không", "chưa", "chẳng", "đã không", "không còn", "vẫn chưa")
 
@@ -82,6 +84,7 @@ class LedgerStore(Protocol):
         subject: str | None = None,
         kind: FactKind | None = None,
         include_superseded: bool = False,
+        as_of_episode: str | None = None,  # M6-V2: facts valid at that episode
     ) -> list[Fact]: ...
 
     def find_conflicts(self, candidate: Fact) -> ConflictReport: ...
@@ -163,18 +166,67 @@ class YamlLedgerStore:
         subject: str | None = None,
         kind: FactKind | None = None,
         include_superseded: bool = False,
+        as_of_episode: str | None = None,  # M6-V2: facts valid at that episode
     ) -> list[Fact]:
-        """Live facts (superseded excluded by default), newest episode first."""
+        """Live facts (superseded excluded by default), newest episode first.
+
+        When ``as_of_episode`` is set, only facts that were established at or
+        before that episode AND not yet superseded at that point are returned
+        (M6-V2 bi-temporal — ``as_of`` answers "what did the ledger know at
+        episode N?").
+        """
         facts = self._load().all_facts
-        if not include_superseded:
+        if as_of_episode is None and not include_superseded:
             facts = [f for f in facts if f.superseded_by is None]
         if subject is not None:
             lowered = subject.strip().lower()
             facts = [f for f in facts if f.subject.lower() == lowered]
         if kind is not None:
             facts = [f for f in facts if f.kind is kind]
+        if as_of_episode is not None:
+            facts = self._filter_as_of(facts, as_of_episode)
         # Newest first: reverse release order, stable within an episode.
         return list(reversed(facts))
+
+    def _filter_as_of(self, facts: list[Fact], as_of_episode: str) -> list[Fact]:
+        """M6-V2: keep only facts VALID at the given episode.
+
+        A fact is valid at episode N when it was established at or before N
+        AND not superseded by a replacement established at or before N.
+        An unparseable anchor behaves like "current time".
+        """
+        try:
+            anchor = _parse_episode_id(as_of_episode)
+        except ValueError:
+            anchor = None  # unknown anchor -> current time
+        # episode order of each fact's replacement (if any)
+        superseded_orders: dict[str, tuple[int, int]] = {}
+        for f in facts:
+            if f.superseded_by:
+                rep = _find_fact(f.superseded_by, self._load().episodes)
+                if rep is not None:
+                    with suppress(ValueError):
+                        superseded_orders[f.fact_id] = _parse_episode_id(
+                            getattr(rep, "episode_id", "")
+                        )
+        out: list[Fact] = []
+        for f in facts:
+            if anchor is None:
+                if f.superseded_by:
+                    continue  # current time: superseded facts are gone
+            else:
+                try:
+                    f_order = _parse_episode_id(f.episode_id)
+                except ValueError:
+                    continue  # fact without a valid episode anchor -> skip
+                if f_order > anchor:
+                    continue  # established after the anchor
+                if f.superseded_by:
+                    sup_order = superseded_orders.get(f.fact_id)
+                    if sup_order is None or sup_order <= anchor:
+                        continue  # already superseded by the anchor (or unknown)
+            out.append(f)
+        return out
 
     def find_conflicts(self, candidate: Fact) -> ConflictReport:
         live = self.query(subject=candidate.subject, kind=candidate.kind)
@@ -327,6 +379,29 @@ class YamlLedgerStore:
 
 def build_ledger(universe_dir: Path) -> LedgerStore:
     return YamlLedgerStore(universe_dir)
+
+
+def _episode_order(episodes: list[object], episode_id: str) -> int | None:
+    """Monotonic order index for an episode_id based on its position in the
+    release-sorted episode list (compared by (season, number), so "ep_010"
+    and "s0ep010" are the same anchor). Unknown episodes return None."""
+    try:
+        target = _parse_episode_id(episode_id)
+    except ValueError:
+        return None
+    for i, ep in enumerate(episodes):
+        if getattr(ep, "order_key", None) == target:
+            return i
+    return None
+
+
+def _find_fact(fact_id: str, episodes: Sequence[EpisodeFile]) -> Fact | None:
+    """Find a fact by id across all episodes."""
+    for ep in episodes:
+        for fact in ep.facts:
+            if fact.fact_id == fact_id:
+                return fact
+    return None
 
 
 def _parse_episode_id(episode_id: str) -> tuple[int, int]:

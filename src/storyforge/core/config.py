@@ -158,6 +158,37 @@ class APISettings(BaseModel):
     users_file: Path = Path("data/secrets/users.json")  # dev users registry
 
 
+class QueueSettings(BaseModel):
+    """M4-A6: shared job queue with lease TTL + heartbeat (multi-worker)."""
+
+    queue_dir: Path = Path("data/queue")
+    lease_ttl_seconds: int = 30
+    heartbeat_interval_seconds: int = 10
+    worker_id: str = ""  # default: hostname
+    scheduled_grace_seconds: int = 0  # jobs not yet due are skipped
+
+
+class PublishSettings(BaseModel):
+    """M4-A4: YouTube upload (draft mode) — credentials via env only."""
+
+    youtube_client_id: str = ""
+    youtube_client_secret: SecretStr = SecretStr("")
+    youtube_refresh_token: SecretStr = SecretStr("")
+    metadata_template: str = "%{title}"
+    upload_enabled: bool = False  # SF__PUBLISH__UPLOAD_ENABLED
+    token_path: Path = Path("data/secrets/youtube_token.json")
+
+
+class AnalyticsSettings(BaseModel):
+    """M7-V3: analytics ingestion — YouTube + local warehouse knobs."""
+
+    warehouse_dir: Path = Path("data/analytics")
+    retention_cache_ttl_hours: float = 24.0  # SF__ANALYTICS__RETENTION_CACHE_TTL_HOURS
+    # M7-W3: agentic proposal loop (default OFF until there is real data).
+    agentic_enabled: bool = False  # SF__ANALYTICS__AGENTIC_ENABLED
+    low_retention_threshold: float = 0.4  # SF__ANALYTICS__LOW_RETENTION_THRESHOLD
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Vars look like SF__SECTION__KEY (see .env.example): prefix "SF__"
@@ -186,6 +217,9 @@ class Settings(BaseSettings):
     animation: AnimationSettings = Field(default_factory=AnimationSettings)
     story: StorySettings = Field(default_factory=StorySettings)
     api: APISettings = Field(default_factory=APISettings)
+    queue: QueueSettings = Field(default_factory=QueueSettings)
+    publish: PublishSettings = Field(default_factory=PublishSettings)
+    analytics: AnalyticsSettings = Field(default_factory=AnalyticsSettings)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Settings:

@@ -68,8 +68,9 @@ class ArbiterLedgerStore:
         subject: str | None = None,
         kind: FactKind | None = None,
         include_superseded: bool = False,
+        as_of_episode: str | None = None,
     ) -> list[Fact]:
-        return self._inner.query(subject, kind, include_superseded)
+        return self._inner.query(subject, kind, include_superseded, as_of_episode)
 
     def supersede(self, fact_id: str, replacement: Fact, *, actor: str) -> None:
         self._inner.supersede(fact_id, replacement, actor=actor)
