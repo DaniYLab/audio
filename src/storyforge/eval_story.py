@@ -1,8 +1,11 @@
-"""Prompt-eval harness (M2-D4 spec §3).
+"""Prompt-eval harness (M2-D4 spec §3, M4-B2 refinement).
 
 ``storyforge eval-story --project demo`` reads the story artifact + lint report,
 asks the judge model to score each scene against the 6-dimension rubric, and
 writes ``evals/story/<date>_v<prompt_version>.json``.
+
+M4-B2: 0-100 scores, verdict derived from 40/70 thresholds, hook evidence
+mandatory, tts_ready capped at 40 when lint fails.
 """
 
 from __future__ import annotations
@@ -44,6 +47,16 @@ def _lint_summary(lint: LintReport | None) -> str:
     return "\n".join(f"- [{i.severity}] {i.rule}: {i.excerpt}" for i in lint.issues)
 
 
+def _score_to_100(raw: float) -> float:
+    """M4-B2 AC4: legacy 1-5 -> 0-100 by scaling ×20."""
+    return raw * 20.0 if raw <= 5.0 else raw
+
+
+def _verdict_for(score: float) -> str:
+    """M4-B2 AC1: verdict DERIVED from score thresholds, never LLM."""
+    return "fail" if score < 40 else ("warn" if score < 70 else "pass")
+
+
 def judge_scene(
     settings: Settings,
     story: Story,
@@ -51,7 +64,7 @@ def judge_scene(
     lint: LintReport | None,
     prompt_version: int,
 ) -> StoryEval:
-    """Score one scene via the judge model (spec §3.3)."""
+    """Score one scene via the judge model (M2-D4 §3.3 + M4-B2)."""
     judge = LLMClient(settings, settings.llm.reviewer_model)
     _, template = load_prompt_with_meta("judge_story")
 
@@ -76,21 +89,31 @@ def judge_scene(
         dim = str(row.get("dimension", ""))
         if dim not in _DIMENSIONS:
             continue
+        score = _score_to_100(float(row.get("score", 0.0)))
+        evidence = str(row.get("evidence", "")).strip()
+        # M4-B2 AC2: hook dimension must quote verbatim text.
+        if dim == "hook" and len(evidence) < 4:
+            raise StoryGenerationError(
+                "hook dimension missing verbatim evidence",
+                details={"response": response[:500]},
+            )
         scores.append(
             DimensionScore(
                 dimension=dim,  # type: ignore[arg-type]
-                score=float(row.get("score", 0.0)),
-                evidence=str(row.get("evidence", "")),
+                score=score,
+                evidence=evidence,
+                verdict=_verdict_for(score),
             )
         )
 
-    # Spec §3.3: a failing lint rule caps tts_ready below 5.0.
+    # M4-B2 AC3: a failing lint rule caps tts_ready at ≤ 40.
     if lint is not None:
         scene_fails = [i for i in lint.issues if i.scene_id == scene_id and i.severity == "fail"]
         if scene_fails:
             for s in scores:
-                if s.dimension == "tts_ready" and s.score >= 5.0:
-                    s.score = 4.0
+                if s.dimension == "tts_ready" and s.score > 40:
+                    s.score = 40.0
+                    s.verdict = _verdict_for(40.0)
 
     mean = sum(s.score for s in scores) / len(scores) if scores else 0.0
     return StoryEval(
@@ -98,7 +121,7 @@ def judge_scene(
         project=story.config.title,
         scene_id=scene_id,
         scores=scores,
-        total=mean * 20.0,
+        total=mean,
         judge_model=settings.llm.reviewer_model,
     )
 

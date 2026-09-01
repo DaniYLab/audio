@@ -100,6 +100,13 @@ class StoryConfig(BaseModel):
     # M3-W5: mood tag for the CC0 music bed (e.g. "warm", "tense", "sad").
     # None = no music bed mixed into the final video.
     music_mood: str | None = None
+    # M4-A2: Previously-On recap clip prepended from episode 2 onward.
+    # ``recap: off`` disables; ``serial_recap: false`` disables auto-prepend.
+    # Episode 1 never recaps.
+    recap: bool = True
+    serial_recap: bool = True
+    # M4-A3: thumbnail source scene (1-based index) or "auto".
+    thumbnail_scene: str | int = "auto"
 
     @field_validator("universe")
     @classmethod
@@ -179,11 +186,17 @@ class VideoResult(BaseModel):
 
 
 class DimensionScore(BaseModel):
-    """One rubric dimension score from the judge LLM (1.0-5.0, 0.5 steps)."""
+    """One rubric dimension score from the judge LLM.
+
+    M4-B2: ``score`` is 0–100; ``verdict`` is DERIVED from the score (never
+    filled by the LLM) via the 40/70 thresholds. Old 1–5 artifacts are
+    backward-compatible at render time (multiplied by 20).
+    """
 
     dimension: Literal["grounding", "consistency", "pacing", "tts_ready", "visual", "hook"]
-    score: float  # 1.0-5.0, step 0.5
-    evidence: str  # quoted passage as evidence
+    score: float  # 0–100 (M4-B2); 1–5 in legacy artifacts
+    evidence: str  # verbatim quoted passage as evidence
+    verdict: Literal["fail", "warn", "pass"] = "pass"  # derived, not LLM-filled
 
 
 class StoryEval(BaseModel):
@@ -193,9 +206,16 @@ class StoryEval(BaseModel):
     project: str
     scene_id: str  # "episode" when scoring the whole story
     scores: list[DimensionScore]
-    total: float  # mean of 6 dimensions * 20 -> 0..100 scale
+    total: float  # mean of 6 dimensions, 0–100 scale
     judge_model: str
     created_at: datetime = Field(default_factory=utc_now)
+
+    @property
+    def passed(self) -> bool:
+        """Overall verdict: any dimension fail → fail; else any warn → warn."""
+        if any(s.verdict == "fail" for s in self.scores):
+            return False
+        return True
 
 
 class StageStatus(StrEnum):

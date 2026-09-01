@@ -220,9 +220,12 @@ class ReviewStage(Stage):
 
     def _build_ledger(self, ctx: StageContext) -> LedgerStore:
         from storyforge.ledger import build_ledger
+        from storyforge.ledger.arbiter import build_arbiter_ledger
 
         universe = self.story.config.universe
-        return build_ledger(Path(ctx.settings.knowledge.ledgers_dir) / universe)
+        inner = build_ledger(Path(ctx.settings.knowledge.ledgers_dir) / universe)
+        # M4-B4: wrap with the LLM arbiter when enabled (off by default).
+        return build_arbiter_ledger(ctx.settings, inner.universe_dir, inner)  # type: ignore[attr-defined]
 
     def _scene_declares_twist(self, subject: str) -> bool:
         lowered = subject.strip().lower()

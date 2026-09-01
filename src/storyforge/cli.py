@@ -787,6 +787,47 @@ def ab_style_cmd(
     console.print(f"[green]✓[/green] {len(rendered)} image(s) in 06_images/ab/")
 
 
+# --- M4-A1: A/B hook -----------------------------------------------------------
+
+
+@app.command(name="hook-ab")
+def hook_ab_cmd(
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Generate 2 alternative hooks, judge both, write 04_story/hook_ab/ (A1)."""
+    from storyforge.core.artifacts import ArtifactStore
+    from storyforge.m4tools import hook_ab
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    store = ArtifactStore(settings.workspace_dir, project)
+    choice_path = hook_ab(settings, store)
+    console.print(f"[green]✓[/green] hook A/B written to {choice_path.parent}")
+    console.print(f"      choice: {choice_path.read_text(encoding='utf-8')}")
+
+
+# --- M4-A3: auto thumbnail ------------------------------------------------------
+
+
+@app.command()
+def thumbnail(
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Best-effort thumbnail: title overlay on the first scene (A3)."""
+    from storyforge.core.artifacts import ArtifactStore
+    from storyforge.m4tools import auto_thumbnail
+
+    settings = _load_settings(config)
+    store = ArtifactStore(settings.workspace_dir, project)
+    out = auto_thumbnail(settings, store)
+    if out is None:
+        console.print("[yellow]thumbnail skipped (missing story/image)[/yellow]")
+    else:
+        console.print(f"[green]✓[/green] thumbnail written to {out}")
+
+
 @app.callback()
 def main(
     version: Annotated[bool, typer.Option("--version", help="Show version.")] = False,

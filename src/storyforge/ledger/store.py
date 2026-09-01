@@ -205,6 +205,27 @@ class YamlLedgerStore:
             reason="complementary fact",
         )
 
+    def find_uncertain(self, candidate: Fact) -> list[Fact]:
+        """M4-B4: Live facts sharing a slot with the candidate (same polarity,
+        different statement) — the rule engine cannot decide these; escalate
+        to the LLM arbiter.
+
+        Empty list means rule-based is decisive (NO_CONFLICT is safe).
+        """
+        live = self.query(subject=candidate.subject, kind=candidate.kind)
+        normalized = _normalize_statement(candidate.statement)
+        cand_slots = slot_polarities_for_kind(candidate.statement, candidate.kind)
+        if not cand_slots:
+            return []
+        out: list[Fact] = []
+        for fact in live:
+            if _normalize_statement(fact.statement) == normalized:
+                continue
+            fact_slots = slot_polarities_for_kind(fact.statement, fact.kind)
+            if set(cand_slots) & set(fact_slots):
+                out.append(fact)
+        return out
+
     def supersede(self, fact_id: str, replacement: Fact, *, actor: str) -> None:
         """Controlled retcon: point the old fact at the replacement.
 
@@ -322,13 +343,13 @@ def _normalize_statement(statement: str) -> str:
 
 def _same_slot_opposite_polarity(a: str, b: str, kind: FactKind) -> bool:
     """True when both statements hit the same semantic slot with opposite polarity."""
-    a_hits = _slot_polarities_for_kind(a, kind)
-    b_hits = _slot_polarities_for_kind(b, kind)
+    a_hits = slot_polarities_for_kind(a, kind)
+    b_hits = slot_polarities_for_kind(b, kind)
     shared = set(a_hits) & set(b_hits)
     return any(a_hits[slot] != b_hits[slot] for slot in shared)
 
 
-def _slot_polarities_for_kind(statement: str, kind: FactKind) -> dict[str, str]:
+def slot_polarities_for_kind(statement: str, kind: FactKind) -> dict[str, str]:
     """Map each slot the statement touches -> the polarity it expresses.
 
     Within one slot the FIRST matching polarity wins (keyword tables are
