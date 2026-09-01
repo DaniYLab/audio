@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# M4-A5: CC0 music library root (BA owns the files + LICENSES.md).
+MUSIC_DIR = Path("assets/music_cc0")
+
 
 class VideoStage(Stage):
     name = "video"
@@ -262,7 +265,7 @@ class VideoStage(Stage):
         """M3-W5: resolve the CC0 music file for the configured mood, if any."""
         if not self.music_mood:
             return None
-        path = Path("assets/music_cc0") / f"{self.music_mood}.mp3"
+        path = MUSIC_DIR / f"{self.music_mood}.mp3"
         return path if path.exists() else None
 
     def _audio_filter(self, ctx: StageContext, music_path: Path | None) -> str | None:

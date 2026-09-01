@@ -128,10 +128,34 @@ class VideoSettings(BaseModel):
     encoder: Literal["auto", "libx264", "h264_nvenc", "h264_qsv"] = "auto"
 
 
+class AnimationSettings(BaseModel):
+    """M6-W1: image-to-video animation provider."""
+
+    provider: Literal["auto", "kenburns", "fal_kling", "veo"] = "auto"
+    motion_default: Literal["kenburns", "slow_push", "pan", "subtle_zoom"] = "slow_push"
+    min_duration_seconds: float = 3.0
+    budget_per_video_usd: float = 2.0
+
+
 class StorySettings(BaseModel):
-    """M4-B1: deterministic style statistics (sentence/opener/repeat/para)."""
+    """M4-B1: deterministic style statistics + M4 A1/A3 knobs."""
 
     style_stats: bool = True  # SF__STORY__STYLE_STATS
+    hook: Literal["auto", "a", "b", "manual"] = "auto"  # M4-A1 AC3
+    thumbnail_scene: str = "auto"  # M4-A3 AC3: "auto" | scene id/index
+    # M6-W3: ctxpack — compact the brief when estimated tokens exceed this
+    # (0 = off). Keeps serial episodes (20+) within the LLM context budget.
+    compact_when_over_tokens: int = 0
+    compact_keep_recent_episodes: int = 10
+
+
+class APISettings(BaseModel):
+    """M5-W1: REST API v1 — JWT auth, rate limiting."""
+
+    jwt_secret: SecretStr = SecretStr("")
+    jwt_ttl_minutes: int = 60
+    rate_limit_per_minute: int = 120
+    users_file: Path = Path("data/secrets/users.json")  # dev users registry
 
 
 class Settings(BaseSettings):
@@ -159,7 +183,9 @@ class Settings(BaseSettings):
     tts: TTSSettings = Field(default_factory=TTSSettings)
     imaging: ImagingSettings = Field(default_factory=ImagingSettings)
     video: VideoSettings = Field(default_factory=VideoSettings)
+    animation: AnimationSettings = Field(default_factory=AnimationSettings)
     story: StorySettings = Field(default_factory=StorySettings)
+    api: APISettings = Field(default_factory=APISettings)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Settings:

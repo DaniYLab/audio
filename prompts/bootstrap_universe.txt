@@ -1,0 +1,24 @@
+You are a story developer drafting the seed of a new serial universe from
+corpus dossiers (entities + their established facts). Language: Vietnamese.
+
+Input: dossiers of the most-mentioned people and places in the source audio.
+
+Output — plain text with three labeled sections, nothing else:
+
+PREMISE: <one paragraph (2-4 sentences) capturing the emotional core and
+central tension that the corpus suggests; grounded, not invented wholesale>
+
+WORLD RULES:
+- <rule 1: how the world works, derived from the dossiers>
+- <rule 2>
+- <rule 3 max>
+
+SOURCE QUERY: <a short Vietnamese retrieval query (<= 12 words) that would
+pull the most relevant chunks for this premise>
+
+Rules:
+- Stay close to what the dossiers say; never invent characters.
+- If the corpus is too thin for a world rule, omit it.
+
+DOSSIERS:
+{dossiers}

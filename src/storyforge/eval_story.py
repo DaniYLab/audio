@@ -58,6 +58,26 @@ def _verdict_for(score: float) -> Literal["fail", "warn", "pass"]:
     return "fail" if score < 40 else ("warn" if score < 70 else "pass")
 
 
+def _ask_judge(
+    judge: LLMClient, template: str, scene_text: str, lint_text: str
+) -> dict[str, object]:
+    user = fill_prompt(
+        template,
+        {"scene": scene_text, "lint_report": lint_text},
+    )
+    response = judge.chat("You are a strict story quality judge.", user)
+    return extract_json(response)
+
+
+def _scores_from(data: dict[str, object]) -> list[dict[str, object]]:
+    scores_raw = data.get("scores")
+    if not isinstance(scores_raw, list) or not scores_raw:
+        raise StoryGenerationError(
+            "judge returned no scores", details={"response": str(data)[:500]}
+        )
+    return [row for row in scores_raw if isinstance(row, dict)]
+
+
 def judge_scene(
     settings: Settings,
     story: Story,
@@ -68,35 +88,30 @@ def judge_scene(
     """Score one scene via the judge model (M2-D4 §3.3 + M4-B2)."""
     judge = LLMClient(settings, settings.llm.reviewer_model)
     _, template = load_prompt_with_meta("judge_story")
+    scene_text = _scene_text_for_judge(story, scene_id)
+    lint_text = _lint_summary(lint)
 
-    user = fill_prompt(
-        template,
-        {
-            "scene": _scene_text_for_judge(story, scene_id),
-            "lint_report": _lint_summary(lint),
-        },
-    )
-    response = judge.chat("You are a strict story quality judge.", user)
-    data = extract_json(response)
-
-    scores_raw = data.get("scores")
-    if not isinstance(scores_raw, list) or not scores_raw:
-        raise StoryGenerationError("judge returned no scores", details={"response": response[:500]})
+    # M4-B2 AC2: retry once when the hook dimension lacks verbatim evidence.
+    data = _ask_judge(judge, template, scene_text, lint_text)
+    scores_raw = _scores_from(data)
+    hook_row = next((r for r in scores_raw if r.get("dimension") == "hook"), None)
+    if hook_row is not None and len(str(hook_row.get("evidence", "")).strip()) < 4:
+        data = _ask_judge(judge, template, scene_text, lint_text)
+        scores_raw = _scores_from(data)
 
     scores: list[DimensionScore] = []
     for row in scores_raw:
-        if not isinstance(row, dict):
-            continue
         dim = str(row.get("dimension", ""))
         if dim not in _DIMENSIONS:
             continue
-        score = _score_to_100(float(row.get("score", 0.0)))
+        raw_score = row.get("score", 0.0)
+        score = _score_to_100(float(str(raw_score)))
         evidence = str(row.get("evidence", "")).strip()
         # M4-B2 AC2: hook dimension must quote verbatim text.
         if dim == "hook" and len(evidence) < 4:
             raise StoryGenerationError(
-                "hook dimension missing verbatim evidence",
-                details={"response": response[:500]},
+                "hook dimension missing verbatim evidence after retry",
+                details={"response": str(data)[:500]},
             )
         scores.append(
             DimensionScore(

@@ -64,7 +64,13 @@ class StoryStage(Stage):
 
         store = build_universe_store(ctx.settings, self.config.universe)
         ledger = self._build_ledger(ctx)
-        compiler = BriefCompiler(store, self.config, ledger=ledger)
+        compiler = BriefCompiler(
+            store,
+            self.config,
+            ledger=ledger,
+            compact_budget_tokens=ctx.settings.story.compact_when_over_tokens,
+            compact_keep_recent_episodes=ctx.settings.story.compact_keep_recent_episodes,
+        )
         brief = compiler.build()
 
         writer = build_writer(ctx.settings)

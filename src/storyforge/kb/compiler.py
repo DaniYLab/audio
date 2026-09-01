@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from storyforge.core.exceptions import KnowledgeBaseError
 from storyforge.core.types import GroundingLevel, StoryBeat, StoryConfig
+from storyforge.ctxpack import maybe_compact
 from storyforge.kb.types import (
     CitedPassage,
     EntityFacts,
@@ -34,10 +35,14 @@ class BriefCompiler:
         store: KnowledgeStore,
         config: StoryConfig,
         ledger: LedgerStore | None = None,
+        compact_budget_tokens: int = 0,
+        compact_keep_recent_episodes: int = 10,
     ) -> None:
         self._store = store
         self._config = config
         self._ledger = ledger
+        self._compact_budget = compact_budget_tokens  # M6-W3: 0 = off
+        self._compact_recent = compact_keep_recent_episodes
         self._cited_chunk_ids: set[str] = set()
         self._degraded = False
         self._degrade_reason: str | None = None
@@ -77,7 +82,11 @@ class BriefCompiler:
         if self._degraded:
             brief.degraded = True
             brief.reason = self._degrade_reason
-        return brief
+        return maybe_compact(
+            brief,
+            budget=self._compact_budget,
+            recent_episodes=self._compact_recent,
+        )
 
     def update(self, brief: KnowledgeBrief, beat: StoryBeat) -> KnowledgeBrief:
         """Pass 2 — scene palette for one beat, with citation dedup."""
@@ -99,7 +108,11 @@ class BriefCompiler:
         if self._degraded:
             brief.degraded = True
             brief.reason = self._degrade_reason
-        return brief
+        return maybe_compact(
+            brief,
+            budget=self._compact_budget,
+            recent_episodes=self._compact_recent,
+        )
 
     # -- helpers -----------------------------------------------------------
 

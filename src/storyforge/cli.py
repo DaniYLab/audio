@@ -828,6 +828,73 @@ def thumbnail(
         console.print(f"[green]✓[/green] thumbnail written to {out}")
 
 
+# --- M4-B5: universe bootstrap from corpus -------------------------------------
+
+
+@app.command()
+def bootstrap(
+    universe: Annotated[str, typer.Option(help="Universe id to bootstrap from KB.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Draft a StoryConfig from the ingested KB (producer reviews, never runs)."""
+    from storyforge.bootstrap import build_bootstrap_draft, write_draft
+    from storyforge.kb.alias import AliasStore
+    from storyforge.providers.knowledge import build_universe_store
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    store = build_universe_store(settings, universe)
+    alias = AliasStore(settings.knowledge.kb_data_dir / universe / "aliases.yaml")
+    draft = build_bootstrap_draft(store, alias, universe, settings=settings)
+    out = write_draft(Path(settings.knowledge.kb_data_dir) / universe, draft)
+
+    table = Table(title=f"Bootstrap draft — universe: {universe}")
+    table.add_column("entity")
+    table.add_column("type")
+    table.add_column("appearance")
+    for character in draft.characters:
+        table.add_row(character.name, "person", character.appearance or "(fill in)")
+    console.print(table)
+    if draft.skipped_entities:
+        console.print("[yellow]skipped:[/yellow] " + ", ".join(draft.skipped_entities[:20]))
+    console.print(f"[green]✓[/green] draft written to {out} (review before use)")
+
+
+# --- M4-A5: music library manager ------------------------------------------------
+
+
+@app.command()
+def music(
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """List available CC0 music moods and their license info."""
+    from storyforge.stages.video import MUSIC_DIR
+
+    if not MUSIC_DIR.exists():
+        console.print(f"[yellow]no music directory yet — BA creates it at {MUSIC_DIR}[/yellow]")
+        return
+
+    files = sorted(MUSIC_DIR.glob("*.mp3"))
+    if not files:
+        console.print(f"[yellow]no .mp3 files in {MUSIC_DIR}[/yellow]")
+        return
+
+    table = Table(title=f"CC0 music library — {MUSIC_DIR}")
+    table.add_column("mood")
+    table.add_column("file")
+    table.add_column("size")
+    for path in files:
+        mood = path.stem
+        size = f"{path.stat().st_size / 1024:.0f} KB"
+        table.add_row(mood, path.name, size)
+    console.print(table)
+
+    lic_dir = MUSIC_DIR / "LICENSES.md"
+    if lic_dir.exists():
+        console.print(f"license info: {lic_dir}")
+    console.print("[green]use:[/green] set StoryConfig.music_mood=<mood> in your story config")
+
+
 @app.callback()
 def main(
     version: Annotated[bool, typer.Option("--version", help="Show version.")] = False,
