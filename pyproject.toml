@@ -82,4 +82,5 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "integration: tests that touch external services or heavy models",
+    "e2e: full-pipeline end-to-end test with fake providers (T-E2E gate)",
 ]

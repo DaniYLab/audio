@@ -5,8 +5,7 @@ from __future__ import annotations
 import pathlib
 from pathlib import Path
 
-import pytest
-
+from storyforge.core.config import Settings, TTSSettings
 from storyforge.core.cost import build_cost_report, classify_tier
 from storyforge.core.metrics import (
     MetricsRecorder,
@@ -16,7 +15,6 @@ from storyforge.core.metrics import (
     reset_run_recorder,
 )
 from storyforge.core.types import RunManifest, StageStatus
-
 
 # -- MetricsRecorder ---------------------------------------------------------
 
@@ -94,7 +92,7 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
 
 def _settings_with_tts(tmp_path: Path, engine: str = "edge") -> Settings:
     """Settings with engine override (constructor alias doesn't work for nested)."""
-    from storyforge.core.config import Settings, TTSSettings
+    from storyforge.core.config import Settings
 
     settings = Settings(llm__api_key="test-key", tts=TTSSettings(engine=engine))
     settings.llm.writer_model = "gpt-4o"

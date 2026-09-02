@@ -22,6 +22,9 @@ typecheck:
 test:
 	python -m pytest
 
+e2e:
+	python -m pytest -m e2e
+
 # Full production run for one project (see README for CLI details).
 run:
 	python -m storyforge.cli run --project demo --source-config config/story_config.example.yaml

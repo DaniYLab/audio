@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install -e ".[dev]"
+          pip install ffmpeg-static  # no-op marker; real ffmpeg below
+      - name: Ruff
+        run: python -m ruff check src tests
+      - name: Mypy
+        run: python -m mypy src
+      - name: Unit tests (no e2e)
+        run: python -m pytest -m "not e2e"
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install ffmpeg (for the video stage)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install
+        run: pip install -e ".[dev,tts,knowledge]"
+      - name: E2E gate (T-E2E — merge gate for every feature)
+        run: python -m pytest -m e2e
