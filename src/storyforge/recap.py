@@ -20,14 +20,20 @@ zero extra LLM calls; a prompt-based builder is a DEV2 refinement.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from storyforge.core.artifacts import ArtifactStore
+from storyforge.core.config import Settings
+from storyforge.core.logging import get_logger
 from storyforge.core.types import StoryConfig
 from storyforge.kb.episode_summary import EpisodeSummary, EpisodeSummaryStore
 from storyforge.kb.types import Fact
 from storyforge.ledger.loader import UniverseLedger
+
+logger = get_logger(__name__)
 
 _MAX_RECAP_WORDS = 90  # ~30s narration (AC2)
 _RECAP_FACT_CAP = 6  # most recent facts that shaped the arc
@@ -157,3 +163,80 @@ def write_recap_plan(ctx_store: object, plan: RecapPlan, out_dir: Path) -> None:
     if isinstance(ctx_store, ArtifactStore):
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "recap_plan.json").write_text(plan.model_dump_json(indent=2), encoding="utf-8")
+
+
+def execute_recap(
+    settings: Settings,
+    store: ArtifactStore,
+    universe_ledger: UniverseLedger | None,
+    episode_number: int,
+    *,
+    scenes: list[Path] | None = None,
+    synth: Callable[[str, Path], None] | None = None,
+) -> RecapSegment | None:
+    """Build + render the recap for an episode (T1-DEV2, M4-A2).
+
+    Returns a ``RecapSegment`` (TTS audio + one montage still + subtitle) that
+    VideoStage prepends before scene 0 — or ``None`` when recap is disabled,
+    it's episode 1, or no facts exist yet.
+
+    ``synth`` defaults to the configured TTS provider; tests inject a fake.
+    """
+    from storyforge.core.types import Story
+    from storyforge.providers.tts import build_tts
+
+    story = store.read_model(store.story_path(), Story)
+    enabled, reason = should_recap(story.config, episode_number)
+    if not enabled:
+        logger.info("recap skipped", reason=reason)
+        return None
+    if universe_ledger is None or not universe_ledger.all_facts:
+        logger.info("recap skipped — no established facts yet")
+        return None
+
+    summaries = EpisodeSummaryStore(Path(settings.knowledge.kb_data_dir))
+    plan = build_recap_plan(
+        story.config,
+        episode_number,
+        universe_ledger,
+        summaries,
+        Path(settings.knowledge.kb_data_dir) / story.config.universe,
+        scenes=scenes,
+    )
+    if not plan.enabled:
+        logger.info("recap skipped", reason=plan.skip_reason)
+        return None
+
+    recap_dir = store.dir("04_story") / "recap"
+    recap_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = recap_dir / "recap.mp3"
+    if synth is None:
+        tts = build_tts(settings)
+
+        def _synth(text: str, out: Path) -> None:
+            from storyforge.core.types import StoryBeat, StoryScene
+
+            tts.synthesize(
+                StoryScene(
+                    scene_id="recap",
+                    beat=StoryBeat(beat_id="recap", summary="recap"),
+                    narration_text=text,
+                    image_prompt="",
+                ),
+                str(out),
+                settings.tts.edge_voice,
+            )
+
+        synth = _synth
+
+    synth(plan.script, audio_path)
+
+    image_path = plan.image_paths[0] if plan.image_paths else None
+    if image_path is None:
+        logger.info("recap skipped — no montage image")
+        return None
+    return RecapSegment(
+        audio_path=str(audio_path),
+        image_path=image_path,
+        subtitle=" ".join(plan.subtitle_lines) or plan.script,
+    )

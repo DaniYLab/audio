@@ -86,3 +86,35 @@ def test_success_writes_reports(
     assert len(reports) == 1
     assert reports[0].status == "ingested"
     assert (tmp_path / "ws" / "proj" / "03_knowledge" / "reports.jsonl").exists()
+
+
+# -- T4-DEV1: SearchHit.source_summary ----------------------------------------
+
+
+class _FakePoint:
+    """Minimal Qdrant point stand-in for ``_to_hit`` (no server needed)."""
+
+    def __init__(self, *, payload: dict[str, object], score: float = 1.0, id: str = "p1") -> None:
+        self.payload = payload
+        self.score = score
+        self.id = id
+
+
+def test_to_hit_carries_source_summary() -> None:
+    """T4-DEV1 AC: a hit carries source_summary when the payload has it."""
+    from storyforge.kb.qdrant_store import QdrantKnowledgeStore
+
+    store = object.__new__(QdrantKnowledgeStore)  # bypass __init__ (no server)
+    point = _FakePoint(payload={"source_summary": "Bà Ngoại gánh hàng rong mùa đông."})
+    hit = store._to_hit(point)  # type: ignore[attr-defined]
+    assert hit.source_summary == "Bà Ngoại gánh hàng rong mùa đông."
+
+
+def test_to_hit_source_summary_default_none() -> None:
+    """Without a payload summary the field is None (not an error)."""
+    from storyforge.kb.qdrant_store import QdrantKnowledgeStore
+
+    store = object.__new__(QdrantKnowledgeStore)  # bypass __init__ (no server)
+    point = _FakePoint(payload={})
+    hit = store._to_hit(point)  # type: ignore[attr-defined]
+    assert hit.source_summary is None

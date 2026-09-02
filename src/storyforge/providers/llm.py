@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,13 @@ from storyforge.kb.brief import (
     render_unknown,
 )
 from storyforge.kb.types import KnowledgeBrief
+
+_current_stage: ContextVar[str | None] = ContextVar("storyforge_current_stage", default=None)
+
+
+def set_current_stage(name: str | None) -> None:
+    """Set the current pipeline stage name for LLM metrics (T5-DEV2)."""
+    _current_stage.set(name)
 
 PROMPTS_DIR = (
     Path(__file__).resolve().parents[2] / "prompts"
@@ -149,9 +157,34 @@ class LLMClient:
 
         data = retry_external(_call)
         try:
-            return str(data["choices"][0]["message"]["content"])
+            content = str(data["choices"][0]["message"]["content"])
+            # T5-DEV2: record token usage + API call into the run-scoped metrics.
+            _record_llm_usage(data)
+            return content
         except (KeyError, IndexError) as exc:
             raise StoryGenerationError(f"malformed llm response: {data}") from exc
+
+
+def _record_llm_usage(data: dict[str, Any]) -> None:
+    """Record LLM token usage + API call into the current run's metrics."""
+    try:
+        from storyforge.core.metrics import current_run_recorder
+
+        rec = current_run_recorder()
+        if rec is None:
+            return
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            rec.record(_current_stage.get() or "llm", api_calls=1)
+            return
+        rec.record(
+            _current_stage.get() or "llm",
+            llm_input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+            llm_output_tokens=int(usage.get("completion_tokens", 0) or 0),
+            api_calls=1,
+        )
+    except Exception:
+        pass  # metrics recording is best-effort
 
 
 class StoryWriter:

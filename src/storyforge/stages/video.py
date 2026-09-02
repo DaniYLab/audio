@@ -148,9 +148,20 @@ class VideoStage(Stage):
         ]
 
         log_path = ctx.store.dir("logs") / "ffmpeg.log"
+        import time
+
+        render_start = time.monotonic()
         self._run_ffmpeg(cmd, log_path)
+        render_seconds = round(time.monotonic() - render_start, 3)
 
         total = sum(c.duration_seconds for c in all_clips)
+        # T1-DEV1: video has no dollar cost but the run records its render
+        # wall-clock time (for the cost report / ops dashboards).
+        from storyforge.core.metrics import current_run_recorder
+
+        recorder = current_run_recorder()
+        if recorder is not None:
+            recorder.record("video", render_seconds=render_seconds)
         logger.info("video assembled", path=str(out_path), seconds=total)
         return VideoResult(
             video_path=out_path,
@@ -262,11 +273,12 @@ class VideoStage(Stage):
             )
 
     def _resolve_music(self, ctx: StageContext) -> Path | None:
-        """M3-W5: resolve the CC0 music file for the configured mood, if any."""
+        """T3-DEV1: resolve the CC0 music file via config/music_moods.yaml."""
         if not self.music_mood:
             return None
-        path = MUSIC_DIR / f"{self.music_mood}.mp3"
-        return path if path.exists() else None
+        from storyforge.music import resolve_mood_file
+
+        return resolve_mood_file(self.music_mood)
 
     def _audio_filter(self, ctx: StageContext, music_path: Path | None) -> str | None:
         """M3-W5 §9.1: FFmpeg filtergraph for background music mixing."""

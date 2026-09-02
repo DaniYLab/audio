@@ -44,10 +44,14 @@ class FalImageGenerator:
     def generate_from_prompt(
         self, prompt: str, out_path: str, reference_image: Path | None = None
     ) -> Illustration:
+        import base64
         import httpx
 
         settings = self._settings
-        url = f"https://fal.run/{settings.imaging.fal_model}"
+        # T3-DEV2: a character reference image switches to the reference-capable
+        # model (flux-pro/kontext) and sends the image data alongside the prompt.
+        model = settings.imaging.fal_ref_model if reference_image is not None else settings.imaging.fal_model
+        url = f"https://fal.run/{model}"
         headers = {"Authorization": f"Key {settings.imaging.fal_key.get_secret_value()}"}
         payload: dict[str, object] = {
             "prompt": prompt,
@@ -56,6 +60,10 @@ class FalImageGenerator:
                 "height": settings.imaging.height,
             },
         }
+        if reference_image is not None:
+            ref_b64 = base64.b64encode(reference_image.read_bytes()).decode("utf-8")
+            payload["reference_image"] = {"url": f"data:image/png;base64,{ref_b64}"}
+            payload["reference_image_url"] = f"data:image/png;base64,{ref_b64}"
 
         def _call() -> dict[str, object]:
             response = httpx.post(url, headers=headers, json=payload, timeout=180.0)

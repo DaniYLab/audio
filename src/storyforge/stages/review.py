@@ -33,7 +33,7 @@ from storyforge.core.exceptions import StoryForgeError
 if TYPE_CHECKING:
     from storyforge.ledger.store import LedgerStore
 from storyforge.core.logging import get_logger
-from storyforge.core.types import GroundingLevel, Story
+from storyforge.core.types import GroundingLevel, Story, StoryScene
 from storyforge.kb.types import (
     ConflictReport,
     ConflictVerdict,
@@ -178,24 +178,27 @@ class ReviewStage(Stage):
                 fact.subject
             ):
                 report = report.model_copy(update={"verdict": ConflictVerdict.TWIST_OK})
-            reports.append(report)
             if report.verdict is ConflictVerdict.NO_CONFLICT:
+                reports.append(report)
                 facts_to_record.append(fact)
-            elif report.verdict is ConflictVerdict.TWIST_OK:
+                continue
+            if report.verdict is ConflictVerdict.TWIST_OK:
+                reports.append(report)
                 n_twist += 1
                 facts_to_record.append(fact)  # supersede applied at record time
-            else:  # CONFLICT
-                needs_review.append(fact.fact_id)
-                if strict:
-                    # Auto-regeneration of the scene lands with Dev 2's writer
-                    # integration; strict mode fails fast meanwhile (CR note).
-                    raise ReviewError(
-                        f"fact conflicts with established canon: {report.reason}",
-                        details={
-                            "fact": fact.statement,
-                            "conflicts": [f.fact_id for f in report.conflicts],
-                        },
+                continue
+            # CONFLICT
+            if strict:
+                # T5-DEV1: auto-regenerate the offending scene ≤ 2 rounds.
+                resolved = self._regenerate_conflict(ctx, fact, report, ledger)
+                for new_fact in resolved:
+                    reports.append(
+                        ConflictReport(candidate=new_fact, verdict=ConflictVerdict.NO_CONFLICT)
                     )
+                    facts_to_record.append(new_fact)
+                continue
+            reports.append(report)
+            needs_review.append(fact.fact_id)
 
         artifact = ReviewArtifact(
             universe=self.story.config.universe,
@@ -217,6 +220,133 @@ class ReviewStage(Stage):
             twists=n_twist,
         )
         return artifact
+
+    def _regenerate_conflict(
+        self,
+        ctx: StageContext,
+        fact: Fact,
+        report: ConflictReport,
+        ledger: LedgerStore,
+    ) -> list[Fact]:
+        """T5-DEV1: regenerate the scene that produced a strict conflict.
+
+        Up to 2 rounds of regeneration (spec §5.2). Returns the conflict-free
+        facts extracted after the successful round; raises ReviewError when
+        the conflict survives both rounds.
+        """
+        scene = self._find_scene_for_fact(fact)
+        if scene is None:
+            raise ReviewError(
+                f"cannot locate scene for conflict fact {fact.fact_id}",
+                details={"fact": fact.statement},
+            )
+
+        for attempt in (1, 2):
+            scene.narration_text = self._regenerate_scene_narration(ctx, scene, report)
+            new_facts = self._extract_scene_facts(ctx, scene)
+
+            clean: list[Fact] = []
+            still_conflict: ConflictReport | None = None
+            for new_fact in new_facts:
+                recheck = ledger.find_conflicts(new_fact)
+                if recheck.verdict is ConflictVerdict.CONFLICT:
+                    still_conflict = recheck
+                    break
+                clean.append(new_fact)
+            if still_conflict is None:
+                return clean  # all re-extracted facts conflict-free
+            if attempt == 2:
+                raise ReviewError(
+                    f"regeneration round {attempt} still conflicts: {still_conflict.reason}",
+                    details={
+                        "fact": still_conflict.candidate.statement,
+                        "conflicts": [f.fact_id for f in still_conflict.conflicts],
+                    },
+                )
+            report = still_conflict  # round 1 conflict -> retry with fresh report
+
+        raise ReviewError(  # pragma: no cover — loop always exits via return/raise
+            "regeneration failed to resolve conflict after 2 rounds",
+            details={"original_fact": fact.statement},
+        )
+
+    def _find_scene_for_fact(self, fact: Fact) -> StoryScene | None:
+        """Best-effort: locate the scene that produced this fact."""
+        # Match by scene_id from the fact's episode_id (if set) or by
+        # checking if the fact's subject appears in the scene's text.
+        if fact.scene_id:
+            for scene in self.story.scenes:
+                if scene.scene_id == fact.scene_id:
+                    return scene
+        for scene in self.story.scenes:
+            if fact.subject.lower() in scene.narration_text.lower():
+                return scene
+        return None
+
+    def _regenerate_scene_narration(
+        self, ctx: StageContext, scene: StoryScene, report: ConflictReport
+    ) -> str:
+        """Call the writer LLM to regenerate a scene's narration, with the
+        conflict report injected as feedback."""
+        from storyforge.providers.llm import LLMClient, fill_prompt, load_prompt
+
+        client = LLMClient(ctx.settings, ctx.settings.llm.writer_model)
+        template = load_prompt("scene")
+        appearance_by_name = {c.name: c.appearance for c in self.story.config.characters}
+        characters = (
+            "; ".join(
+                f"{name} ({appearance_by_name.get(name, 'appearance unspecified')})"
+                for name in scene.beat.characters
+            )
+            or "(narrator only)"
+        )
+        conflict_feedback = (
+            f"\n\nCONFLICT REPORT (resolve this before writing):\n"
+            f"  - Fact: {report.reason}"
+        )
+        system = fill_prompt(
+            template,
+            {
+                "language": self.story.config.language,
+                "tone": self.story.config.style.tone,
+                "art_style": self.story.config.style.art_style,
+            },
+        )
+        user = (
+            fill_prompt(
+                template,
+                {
+                    "beat_summary": scene.beat.summary,
+                    "characters": characters,
+                    "degraded": "",
+                    "palette": "",
+                    "established": "",
+                    "style_stats": "",
+                },
+            )
+            + conflict_feedback
+        )
+        response = client.chat(system, user)
+        # Parse only the narration part (before IMAGE_PROMPT:).
+        narration, _, _ = response.partition("IMAGE_PROMPT:")
+        return narration.strip() or response.strip()
+
+    def _extract_scene_facts(self, ctx: StageContext, scene: StoryScene) -> list[Fact]:
+        """Extract facts from a single scene (reuses the review_extract prompt)."""
+        from storyforge.providers.llm import LLMClient, fill_prompt, load_prompt
+
+        client = LLMClient(ctx.settings, ctx.settings.llm.writer_model)
+        template = load_prompt("review_extract")
+        scenes_text = (
+            f"SCENE {scene.scene_id} (beat {scene.beat.beat_id}"
+            + ("\n" + scene.narration_text)
+            + (f"\nfacts_used: {', '.join(scene.facts_used)}" if scene.facts_used else "")
+        )
+        response = client.chat(
+            system=fill_prompt(template, {"language": self.story.config.language}),
+            user=fill_prompt(template, {"scenes": scenes_text}),
+        )
+        return parse_fact_lines(response)
 
     def _build_ledger(self, ctx: StageContext) -> LedgerStore:
         from storyforge.ledger import build_ledger

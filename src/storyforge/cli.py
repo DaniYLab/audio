@@ -76,13 +76,21 @@ def _execute_pipeline(
     force: bool,
     only: list[str] | None,
 ) -> None:
-    """Run stages sequentially, reloading intermediates between stages.
+    """Run stages sequentially with per-stage error handling (T2-DEV1).
 
-    The orchestrator in core.pipeline tracks status; this function handles the
-    data handoff by reading the previous stage's artifacts from the store, so
-    each stage gets its inputs regardless of when they were produced.
+    Each stage is wrapped in try/except: a failure marks the stage FAILED in
+    the manifest and stops the run (never leaves a stale PENDING). The alert
+    checker runs in ``finally`` — on success AND on any failure. A run-scoped
+    MetricsRecorder is flushed into the manifest after every stage.
     """
     from storyforge.core.artifacts import ArtifactStore
+    from storyforge.core.metrics import (
+        MetricsRecorder,
+        bind_run_recorder,
+        flush_into_manifest,
+        reset_run_recorder,
+    )
+    from storyforge.providers.llm import set_current_stage
     from storyforge.stages.download import DownloadStage
     from storyforge.stages.imaging import ImagingStage
     from storyforge.stages.knowledge import KnowledgeStage
@@ -96,52 +104,151 @@ def _execute_pipeline(
     store = ArtifactStore(settings.workspace_dir, project)
     manifest = store.load_manifest()
     ctx = StageContext(settings, store, manifest)
+    recorder = MetricsRecorder()
+    bind_run_recorder(recorder)
 
-    download = DownloadStage(urls=urls, local_files=local_files)
-    sources = download.run(ctx, force=force)
-    ctx.mark_done("download", sources=len(sources))
-    store.save_manifest(manifest)
+    try:
+        # download
+        try:
+            set_current_stage("download")
+            download = DownloadStage(urls=urls, local_files=local_files)
+            sources = download.run(ctx, force=force)
+            ctx.mark_done("download", sources=len(sources))
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "download", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
 
-    transcribe = TranscribeStage(sources=sources)
-    transcripts = transcribe.run(ctx, force=force)
-    ctx.mark_done("transcribe", transcripts=len(transcripts))
-    store.save_manifest(manifest)
+        # transcribe
+        try:
+            set_current_stage("transcribe")
+            transcribe = TranscribeStage(sources=sources)
+            transcripts = transcribe.run(ctx, force=force)
+            ctx.mark_done("transcribe", transcripts=len(transcripts))
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "transcribe", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
 
-    knowledge = KnowledgeStage(
-        transcripts=transcripts,
-        universe=story_config.universe,
-        grounding=story_config.grounding,
-    )
-    reports = knowledge.run(ctx, force=force)
-    ctx.mark_done("knowledge", reports=len(reports))
-    store.save_manifest(manifest)
+        # knowledge
+        try:
+            set_current_stage("knowledge")
+            knowledge = KnowledgeStage(
+                transcripts=transcripts,
+                universe=story_config.universe,
+                grounding=story_config.grounding,
+            )
+            reports = knowledge.run(ctx, force=force)
+            ctx.mark_done("knowledge", reports=len(reports))
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "knowledge", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
 
-    story_stage = StoryStage(config=story_config)
-    story = story_stage.run(ctx, force=force)
-    ctx.mark_done("story", scenes=len(story.scenes))
-    store.save_manifest(manifest)
+        # story
+        try:
+            set_current_stage("story")
+            story_stage = StoryStage(config=story_config)
+            story = story_stage.run(ctx, force=force)
+            ctx.mark_done("story", scenes=len(story.scenes))
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "story", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
 
-    review = ReviewStage(story=story).run(ctx, force=force)
-    ctx.mark_done("review", conflicts=review.summary.n_conflict)
-    store.save_manifest(manifest)
+        # review
+        try:
+            set_current_stage("review")
+            review = ReviewStage(story=story).run(ctx, force=force)
+            ctx.mark_done("review", conflicts=review.summary.n_conflict)
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "review", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
 
-    tts_stage = TTSStage(story=story)
-    clips = tts_stage.run(ctx, force=force)
-    ctx.mark_done("tts", clips=len(clips))
-    store.save_manifest(manifest)
+        # tts
+        try:
+            set_current_stage("tts")
+            tts_stage = TTSStage(story=story)
+            clips = tts_stage.run(ctx, force=force)
+            ctx.mark_done("tts", clips=len(clips))
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "tts", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
 
-    imaging = ImagingStage(story=story)
-    illustrations = imaging.run(ctx, force=force)
-    ctx.mark_done("imaging", images=len(illustrations))
-    store.save_manifest(manifest)
+        # imaging
+        try:
+            imaging = ImagingStage(story=story)
+            illustrations = imaging.run(ctx, force=force)
+            ctx.mark_done("imaging", images=len(illustrations))
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "imaging", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
 
-    video = VideoStage(clips=clips, illustrations=illustrations)
-    result = video.run(ctx, force=force)
-    ctx.mark_done("video", seconds=result.duration_seconds)
-    store.save_manifest(manifest)
+        # recap (T1-DEV2): prepend "Previously On" clip for episodes ≥ 2.
+        equip_recap = getattr(story_config, "recap", True) is not False
+        recap_segment = None
+        if equip_recap:
+            try:
+                from storyforge.ledger.loader import load_universe
+                from storyforge.recap import execute_recap
 
-    _check_alert(settings, project, manifest)
-    console.print(f"[green]✓[/green] Video: {result.video_path}")
+                universe_dir = settings.knowledge.ledgers_dir / story_config.universe
+                if universe_dir.exists():
+                    ledger = load_universe(universe_dir)
+                    image_dir = store.dir("06_images")
+                    scene_images = sorted(image_dir.glob("*.png")) if image_dir.exists() else []
+                    episode_number = len(ledger.episodes) + 1 if ledger.episodes else 2
+                    recap_segment = execute_recap(
+                        settings, store, ledger, episode_number, scenes=scene_images
+                    )
+            except Exception:
+                logger.warning("recap generation failed — continuing")
+
+        # video
+        try:
+            video = VideoStage(
+                clips=clips,
+                illustrations=illustrations,
+                music_mood=story_config.music_mood,
+                recap=recap_segment,
+            )
+            result = video.run(ctx, force=force)
+            ctx.mark_done("video", seconds=result.duration_seconds)
+        except StoryForgeError as exc:
+            _mark_failed(ctx, "video", exc)
+            raise typer.Exit(code=1) from exc
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
+
+        console.print(f"[green]✓[/green] Video: {result.video_path}")
+    finally:
+        flush_into_manifest(recorder, manifest)
+        store.save_manifest(manifest)
+        reset_run_recorder()
+        # Alerts fire on success AND on failure (T2-DEV1 AC1).
+        _check_alert(settings, project, manifest)
+
+
+def _mark_failed(ctx: StageContext, stage: str, exc: StoryForgeError) -> None:
+    """Mark a stage FAILED on the manifest, save, and log."""
+    from storyforge.core.types import StageStatus
+
+    ctx.manifest.mark(stage, StageStatus.FAILED, error=str(exc))
+    record = ctx.manifest.stages.get(stage)
+    if record is not None:
+        record.error = str(exc)
+    ctx.store.save_manifest(ctx.manifest)
+    console.print(f"[red]✗[/red] stage '{stage}' failed: {exc}")
 
 
 # --- M3-W6: alert on repeated stage failure -----------------------------------
@@ -150,9 +257,9 @@ def _execute_pipeline(
 def _check_alert(settings: Settings, project: str, manifest: RunManifest) -> None:
     """Append an alert line when the same stage failed in the previous run too.
 
-    Reads the per-project failure history from the workspace; after 2
-    consecutive failures of the same stage, a line is appended to
-    ``data/alerts.md`` (M3-W6 §9.2). The counter resets on success.
+    Reads the per-project failure history (``<workspace>/<project>/.failures.json``);
+    after 2 consecutive failures of the same stage, a line is appended to
+    ``<data>/alerts.md`` (M3-W6 §9.2). The counter resets on success.
     """
     from storyforge.core.types import StageStatus
 
@@ -187,7 +294,7 @@ def _check_alert(settings: Settings, project: str, manifest: RunManifest) -> Non
                 f"[{utc_now().isoformat()}] project {project} stage {stage} fail x{count}"
             )
     if alerts:
-        alerts_dir = Path("data")
+        alerts_dir = Path(settings.workspace_dir).parent
         alerts_dir.mkdir(parents=True, exist_ok=True)
         with (alerts_dir / "alerts.md").open("a", encoding="utf-8") as fh:
             fh.write("\n".join(alerts) + "\n")
@@ -652,12 +759,34 @@ def aliases_reject(
     console.print(f"[green]✓[/green] rejected '{name}' (audit appended)")
 
 
+@aliases_app.command("rename")
+def aliases_rename(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    old: Annotated[str, typer.Argument(help="Current canonical name to rename.")],
+    to: Annotated[str, typer.Option(help="New canonical name.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Rename a canonical entity (the old name becomes an alias) — T6-DEV1."""
+    settings = _load_settings(config)
+    store = _universe_alias_store(settings, universe)
+    if not store.rename(old, to):
+        console.print(f"[red]✗[/red] cannot rename: '{old}' unknown or invalid target")
+        raise typer.Exit(code=1)
+    store.save()
+    store.audit(actor="human", action="rename", name=old, into=to)
+    console.print(f"[green]✓[/green] renamed '{old}' → '{to}' (audit appended)")
+
+
 # --- M2-V4: per-stage cost report ---------------------------------------------
 
 
 @app.command()
 def cost(
     project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    tier: Annotated[
+        str | None,
+        typer.Option(help="Filter rows to a tier: standard | premium."),
+    ] = None,
     config: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Aggregate manifest metrics into a per-stage, per-tier cost report."""
@@ -675,6 +804,8 @@ def cost(
     table.add_column("cost_usd")
     table.add_column("metrics")
     for row in report.stages:
+        if tier and row.tier != tier:
+            continue
         metrics = ", ".join(f"{k}={v}" for k, v in row.metrics.items()) or "—"
         table.add_row(row.stage, row.tier, f"{row.cost_usd:.4f}", metrics)
     console.print(table)
@@ -682,15 +813,18 @@ def cost(
     totals = Table(title="Totals by tier")
     totals.add_column("tier")
     totals.add_column("cost_usd")
-    for tier in ("standard", "premium"):
-        totals.add_row(tier, f"{report.by_tier.get(tier, 0.0):.4f}")
+    for t in ("standard", "premium"):
+        if tier and t != tier:
+            continue
+        totals.add_row(t, f"{report.by_tier.get(t, 0.0):.4f}")
     totals.add_row("[bold]total[/bold]", f"[bold]{report.total_cost_usd:.4f}[/bold]")
     console.print(totals)
 
     if report.total_cost_usd == 0.0:
         console.print(
-            "[yellow]note:[/yellow] no *_usd metrics recorded yet — "
-            "stages emit cost via ctx.mark_done(..., <name>_usd=...)"
+            "[yellow]note:[/yellow] no *_usd / token metrics recorded yet — "
+            "providers emit cost via ctx.mark_done(..., cost_usd=...) "
+            "or the metrics recorder"
         )
 
     out = store.root / "cost_report.json"
@@ -868,34 +1002,70 @@ def bootstrap(
 
 @app.command()
 def music(
+    list_moods: Annotated[
+        bool, typer.Option("--list", help="List moods from config/music_moods.yaml.")
+    ] = False,
+    add: Annotated[
+        Path | None, typer.Option(help="Music file to add to the library.")
+    ] = None,
+    mood: Annotated[str | None, typer.Option(help="Mood name (with --add).")] = None,
+    license: Annotated[
+        str | None, typer.Option(help="CC0 license URL (required with --add).")
+    ] = None,
     config: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
-    """List available CC0 music moods and their license info."""
-    from storyforge.stages.video import MUSIC_DIR
+    """Manage the CC0 music library (T3-DEV1).
 
-    if not MUSIC_DIR.exists():
-        console.print(f"[yellow]no music directory yet — BA creates it at {MUSIC_DIR}[/yellow]")
+    ``--list`` reads ``config/music_moods.yaml``; ``--add <file> --mood <mood>
+    --license <url>`` copies the file into ``assets/music_cc0/`` and appends
+    the mood (a license URL is mandatory — no file without license).
+    """
+    from storyforge.music import (
+        LICENSES_PATH,
+        MOODS_PATH,
+        MusicLibraryError,
+        add_mood,
+        load_moods,
+    )
+
+    if add is not None:
+        if not mood:
+            console.print("[red]✗[/red] --mood is required with --add")
+            raise typer.Exit(code=1)
+        if not license:
+            console.print("[red]✗[/red] --license is required with --add")
+            raise typer.Exit(code=1)
+        try:
+            entry = add_mood(add, mood, license)
+        except MusicLibraryError as exc:
+            console.print(f"[red]✗[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        dur = f"{entry.duration_seconds:.1f}s" if entry.duration_seconds else "n/a"
+        console.print(
+            f"[green]✓[/green] added '{mood}' -> {entry.file} (duration {dur})"
+        )
         return
 
-    files = sorted(MUSIC_DIR.glob("*.mp3"))
-    if not files:
-        console.print(f"[yellow]no .mp3 files in {MUSIC_DIR}[/yellow]")
+    moods = load_moods()
+    if not moods:
+        console.print(f"[yellow]no moods in {MOODS_PATH} yet[/yellow]")
         return
 
-    table = Table(title=f"CC0 music library — {MUSIC_DIR}")
+    table = Table(title="CC0 music library")
     table.add_column("mood")
     table.add_column("file")
-    table.add_column("size")
-    for path in files:
-        mood = path.stem
-        size = f"{path.stat().st_size / 1024:.0f} KB"
-        table.add_row(mood, path.name, size)
+    table.add_column("license")
+    table.add_column("duration")
+    for m in moods:
+        dur = f"{m.duration_seconds:.1f}s" if m.duration_seconds else "n/a"
+        table.add_row(m.mood, m.file, m.license or "—", dur)
     console.print(table)
 
-    lic_dir = MUSIC_DIR / "LICENSES.md"
-    if lic_dir.exists():
-        console.print(f"license info: {lic_dir}")
-    console.print("[green]use:[/green] set StoryConfig.music_mood=<mood> in your story config")
+    if LICENSES_PATH.exists():
+        console.print(f"license info: {LICENSES_PATH}")
+    console.print(
+        "[green]use:[/green] set StoryConfig.music_mood=<mood> in your story config"
+    )
 
 
 # --- M4-A4: YouTube upload (draft mode) ---------------------------------------

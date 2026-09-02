@@ -71,7 +71,7 @@ ignore = ["E501"]  # line length enforced by formatter where possible
 known-first-party = ["storyforge"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 mypy_path = "src"
 explicit_package_bases = true

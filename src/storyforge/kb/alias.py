@@ -188,6 +188,43 @@ class AliasStore:
             self._entries = survivors
         return changed
 
+    def rename(self, old: str, new: str) -> bool:
+        """T6-DEV1: rename a canonical entity (M2 §5.3 ``--rename``).
+
+        The old canonical name becomes an alias of the new one, so references
+        to either spelling keep resolving. Returns True when the table changed.
+        """
+        entries = self._load()
+        entry = next((e for e in entries if e.matches(old)), None)
+        if entry is None:
+            return False
+        new = new.strip()
+        if not new or new.lower() == old.lower():
+            return False
+        # If a separate entry already exists for the new name, fold this one
+        # into it; otherwise rename in place.
+        target = next((e for e in entries if e is not entry and e.matches(new)), None)
+        if target is not None:
+            for alias in entry.aliases:
+                lowered = {a.lower() for a in target.aliases}
+                if alias.lower() != target.canonical.lower() and alias.lower() not in lowered:
+                    target.aliases.append(alias)
+            if old.lower() != target.canonical.lower():
+                lowered = {a.lower() for a in target.aliases}
+                if old.lower() not in lowered:
+                    target.aliases.append(old)
+            if entry.status == "pending":
+                # absorb provenance of the pending entry
+                target.status = "confirmed"
+            self._entries = [e for e in entries if e is not entry]
+            return True
+        entry.aliases = [
+            a for a in entry.aliases if a.lower() != new.lower() and a.lower() != old.lower()
+        ] + [old]
+        entry.canonical = new
+        self._entries = entries
+        return True
+
     # -- bootstrap report (design v4 §5.3) ------------------------------------
 
     def unmapped_report(self, mentions: dict[str, int], top: int = 50) -> list[dict[str, Any]]:

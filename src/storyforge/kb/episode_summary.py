@@ -55,6 +55,7 @@ class LLMEpisodeSummarizer:
         self._universe_id = universe_id
 
     def summarize(self, transcript: Transcript) -> EpisodeSummary:
+        from storyforge.core.metrics import current_run_recorder
         from storyforge.providers.llm import LLMClient, fill_prompt, load_prompt
 
         # M2 §5.2: writer model (the summarizer shapes the writer's J1 input).
@@ -64,6 +65,11 @@ class LLMEpisodeSummarizer:
             system=fill_prompt(template, {"language": transcript.language}),
             user=fill_prompt(template, {"transcript": transcript.full_text[:12000]}),
         )
+        # T1-DEV1: the ingest LLM call is a paid API call — record it so the
+        # cost report is > $0 for a real run.
+        recorder = current_run_recorder()
+        if recorder is not None:
+            recorder.record("knowledge", api_calls=1)
         return EpisodeSummary(
             source_id=transcript.source.id,
             universe_id=self._universe_id,

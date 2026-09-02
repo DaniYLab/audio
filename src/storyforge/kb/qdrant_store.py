@@ -427,6 +427,8 @@ class QdrantKnowledgeStore:
             speaker=payload.get("speaker"),
             entities=[str(e) for e in payload.get("entities", [])],
             topics=[str(t) for t in payload.get("topics", [])],
+            # T4-DEV1: expose the per-source summary (M2 §5.2) when present.
+            source_summary=payload.get("source_summary"),
         )
 
     # -- entity dossier (J2) ------------------------------------------------------

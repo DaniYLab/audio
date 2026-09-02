@@ -1,0 +1,28 @@
+# Music mood library (T3-DEV1, M4-A5).
+# BA supplies the CC0 files in assets/music_cc0/ + LICENSES.md (source,
+# license, download URL). Every mood maps to exactly one file.
+#
+# ``storyforge music --add <file> --mood <mood> --license <url>`` appends a
+# mood here (and copies the file into assets/music_cc0/).
+
+moods:
+  calm:
+    file: assets/music_cc0/calm.mp3
+    volume: 0.15
+    license: ""
+  tense:
+    file: assets/music_cc0/tense.mp3
+    volume: 0.15
+    license: ""
+  nostalgic:
+    file: assets/music_cc0/nostalgic.mp3
+    volume: 0.15
+    license: ""
+  joyful:
+    file: assets/music_cc0/joyful.mp3
+    volume: 0.15
+    license: ""
+  dark:
+    file: assets/music_cc0/dark.mp3
+    volume: 0.15
+    license: ""

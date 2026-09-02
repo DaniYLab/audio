@@ -112,16 +112,68 @@ def test_trap_recall_loose_flag_conflict(ctx: StageContext):
     assert [f.fact_id for f in report.conflicts] == ["f0007"]
 
 
-def test_trap_recall_strict_fails_fast(ctx: StageContext):
-    """Trap 1 strict: the contradiction must fail the stage."""
+def test_trap_recall_strict_regenerates(ctx: StageContext):
+    """T5-DEV1 AC: strict conflict now auto-regenerates the scene instead of
+    failing fast — when the regeneration resolves it, the stage passes."""
     ledger = _ledger_with_alive(ctx, "_trap1strict")
     stage = ReviewStage(
         _story(grounding=GroundingLevel.STRICT),
         extractor=lambda story: [_fact("Bà Ngoại đã qua đời")],
         ledger=ledger,
     )
-    with pytest.raises(StoryForgeError, match="conflicts with established canon"):
+    # Fake regeneration: narration fixed, re-extraction finds no conflicts.
+    stage._regenerate_scene_narration = lambda ctx, scene, report: (  # type: ignore[method-assign]
+        "Bà Ngoại còn sống, ở cùng Lan."
+    )
+    stage._extract_scene_facts = lambda ctx, scene: []  # type: ignore[method-assign]
+    artifact: ReviewArtifact = stage.run(ctx, force=True)
+    assert artifact.summary.n_conflict == 0
+
+
+def test_strict_conflict_persists_after_two_rounds_fails(ctx: StageContext):
+    """T5-DEV1 AC: conflict still present after 2 regeneration rounds -> clear
+    failure (never silently pass)."""
+    ledger = _ledger_with_alive(ctx, "_trap1persist")
+    stage = ReviewStage(
+        _story(grounding=GroundingLevel.STRICT),
+        extractor=lambda story: [_fact("Bà Ngoại đã qua đời")],
+        ledger=ledger,
+    )
+    stage._regenerate_scene_narration = lambda ctx, scene, report: (  # type: ignore[method-assign]
+        "Bà Ngoại vẫn đã qua đời."  # keeps the contradiction
+    )
+    stage._extract_scene_facts = lambda ctx, scene: [_fact("Bà Ngoại đã qua đời")]  # type: ignore[method-assign]
+    with pytest.raises(StoryForgeError, match="still conflicts"):
         stage.run(ctx, force=True)
+
+
+def test_strict_conflict_resolves_after_first_regeneration(ctx: StageContext):
+    """T5-DEV1 AC: regenerate 1 round -> re-extracted facts conflict-free."""
+    ledger = _ledger_with_alive(ctx, "_trap1resolve")
+    stage = ReviewStage(
+        _story(grounding=GroundingLevel.STRICT),
+        extractor=lambda story: [_fact("Bà Ngoại đã qua đời")],
+        ledger=ledger,
+    )
+    # Round 1 still conflicts, round 2 fixes it — but the method is called per
+    # attempt; return a non-conflicting fact so the loop exits on round 1.
+    stage._regenerate_scene_narration = lambda ctx, scene, report: (  # type: ignore[method-assign]
+        "Bà Ngoại còn sống, ở cùng Lan."
+    )
+    stage._extract_scene_facts = lambda ctx, scene: [  # type: ignore[method-assign]
+        Fact(
+            fact_id="f_new",
+            kind=FactKind.CHARACTER,
+            subject="Bà Ngoại",
+            statement="Bà Ngoại còn sống, ở cùng Lan",
+            origin=FactOrigin.INVENTED,
+            episode_id="pending",
+            extracted_by="llm",
+        )
+    ]
+    artifact: ReviewArtifact = stage.run(ctx, force=True)
+    assert artifact.summary.n_conflict == 0
+    assert artifact.facts_to_record
 
 
 def test_twist_false_positive_is_twist_ok(ctx: StageContext):

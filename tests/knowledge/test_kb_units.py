@@ -91,6 +91,40 @@ def test_alias_add_pending_is_idempotent(alias: AliasStore):
     assert alias.add_pending("lan", "person") is False  # case-insensitive dedup
 
 
+# --- T6-DEV1: rename -----------------------------------------------------------
+
+
+def test_alias_rename_keeps_old_as_alias(alias: AliasStore):
+    alias.add_pending("Bà Ngoại", "person")
+    assert alias.rename("Bà Ngoại", "Ngoại Bà") is True
+    # New canonical resolves.
+    assert alias.resolve("Ngoại Bà") == "Ngoại Bà"
+    # Old name still resolves (now an alias).
+    assert alias.resolve("Bà Ngoại") == "Ngoại Bà"
+    entry = alias.entry_for("Ngoại Bà")
+    assert entry is not None and "Bà Ngoại" in entry.aliases
+
+
+def test_alias_rename_unknown_returns_false(alias: AliasStore):
+    assert alias.rename("Không Ai Cả", "X") is False
+
+
+def test_alias_rename_empty_or_same_target_returns_false(alias: AliasStore):
+    alias.add_pending("Lan", "person")
+    assert alias.rename("Lan", "") is False
+    assert alias.rename("Lan", "lan") is False  # same name, different case
+
+
+def test_alias_rename_folds_into_existing_entry(alias: AliasStore):
+    alias.add_pending("Bà Ngoại", "person")
+    alias.add_pending("Ngoại Bà", "person")
+    assert alias.rename("Bà Ngoại", "Ngoại Bà") is True
+    # Both spellings resolve to the single surviving entry.
+    assert alias.resolve("Bà Ngoại") == "Ngoại Bà"
+    assert alias.resolve("Ngoại Bà") == "Ngoại Bà"
+    assert len(alias.all_entries()) == 1
+
+
 def test_alias_save_and_reload(alias_path: Path, alias: AliasStore):
     alias.add_pending("Bà Ngoại", "person")
     alias.save()

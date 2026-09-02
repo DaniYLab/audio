@@ -54,6 +54,9 @@ class SearchHit(BaseModel):
     speaker: str | None
     entities: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
+    # T4-DEV1: per-source episode summary (M2 §5.2) — populated when the
+    # chunk's payload carries a ``source_summary`` key.
+    source_summary: str | None = None
 
 
 # --- entity dossier (J2) ----------------------------------------------------
