@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -62,6 +63,40 @@ class StyleStats(BaseModel):
     repeated_phrases: list[str] = Field(default_factory=list)  # n-grams seen > 3x
     avg_paragraph_length: float = 0.0
     total_words: int = 0
+
+
+def accumulate_style_stats(
+    universe_dir: Path, episode_id: str, stats: StyleStats, keep: int = 10
+) -> None:
+    """Write per-episode stats and prune to keep the most recent ``keep``
+    episodes (T4-DEV2). Prunes the oldest files by mtime."""
+    stats_dir = universe_dir / "style_stats"
+    stats_dir.mkdir(parents=True, exist_ok=True)
+    (stats_dir / f"{episode_id}.json").write_text(stats.model_dump_json(indent=2), encoding="utf-8")
+    files = sorted(stats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for stale in files[keep:]:
+        stale.unlink(missing_ok=True)
+
+
+def load_accumulated_stats(universe_dir: Path, keep: int = 10) -> str:
+    """Render accumulated stats of the most recent ``keep`` episodes for the
+    judge prompt (T4-DEV2). Empty string when no episodes recorded yet."""
+    stats_dir = universe_dir / "style_stats"
+    if not stats_dir.exists():
+        return ""
+    files = sorted(stats_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:keep]
+    lines = ["[ACCUMULATED STYLE STATS — previous episodes]"]
+    for path in files:
+        try:
+            stats = StyleStats.model_validate_json(path.read_text(encoding="utf-8"))
+            openers = ", ".join(f"{k}={v}" for k, v in sorted(stats.scene_openers.items()))
+            lines.append(
+                f"- {path.stem}: avg_sentence={stats.avg_sentence_length}, "
+                f"openers=[{openers}], total_words={stats.total_words}"
+            )
+        except Exception:
+            lines.append(f"- {path.stem}: (corrupt)")
+    return "\n".join(lines)
 
 
 class StyleStatsTracker:

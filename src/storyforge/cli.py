@@ -997,6 +997,72 @@ def bootstrap(
     console.print(f"[green]✓[/green] draft written to {out} (review before use)")
 
 
+# --- M3-W4 / T3-DEV2: character reference image ---------------------------------
+
+
+character_ref_app = typer.Typer(
+    help="Manage canonical character reference images for consistent generation.",
+    no_args_is_help=True,
+)
+app.add_typer(character_ref_app, name="character-ref")
+
+
+@character_ref_app.command("set")
+def character_ref_set(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    name: Annotated[str, typer.Argument(help="Character name.")],
+    image: Annotated[Path, typer.Option(help="Path to the reference image PNG.", exists=True, readable=True)],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Set a canonical reference image for a character (T3-DEV2)."""
+    from storyforge.stages.imaging import _slugify
+
+    settings = _load_settings(config)
+    slug = _slugify(name)
+    ref_dir = settings.knowledge.kb_data_dir / universe / "characters"
+    ref_dir.mkdir(parents=True, exist_ok=True)
+    out = ref_dir / f"{slug}.png"
+    import shutil
+
+    shutil.copy2(image, out)
+    console.print(f"[green]✓[/green] reference image set for '{name}' → {out}")
+
+
+@character_ref_app.command("generate")
+def character_ref_generate(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    name: Annotated[str, typer.Argument(help="Character name.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Generate a character-sheet image for a new ref (front, neutral bg)."""
+    from storyforge.providers.imaging import build_image_generator
+    from storyforge.stages.imaging import _slugify
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    generator = build_image_generator(settings)
+    # Find the character sheet in the story config to get appearance.
+    from storyforge.core.types import Story
+
+    story_path = Path(settings.workspace_dir) / universe / "04_story" / "story.json"
+    if story_path.exists():
+        story = Story.model_validate_json(story_path.read_text(encoding="utf-8"))
+        appearance = ""
+        for c in story.config.characters:
+            if c.name == name:
+                appearance = c.appearance
+                break
+    else:
+        appearance = name
+    prompt = f"character sheet, front view, neutral background, {appearance}"
+    slug = _slugify(name)
+    ref_dir = settings.knowledge.kb_data_dir / universe / "characters"
+    ref_dir.mkdir(parents=True, exist_ok=True)
+    out_path = str(ref_dir / f"{slug}.png")
+    generator.generate_from_prompt(prompt, out_path)
+    console.print(f"[green]✓[/green] reference image generated for '{name}' → {out_path}")
+
+
 # --- M4-A5: music library manager ------------------------------------------------
 
 

@@ -45,6 +45,7 @@ class FalImageGenerator:
         self, prompt: str, out_path: str, reference_image: Path | None = None
     ) -> Illustration:
         import base64
+
         import httpx
 
         settings = self._settings
