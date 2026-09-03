@@ -59,11 +59,11 @@ def _verdict_for(score: float) -> Literal["fail", "warn", "pass"]:
 
 
 def _ask_judge(
-    judge: LLMClient, template: str, scene_text: str, lint_text: str
+    judge: LLMClient, template: str, scene_text: str, lint_text: str, style_stats: str = ""
 ) -> dict[str, object]:
     user = fill_prompt(
         template,
-        {"scene": scene_text, "lint_report": lint_text},
+        {"scene": scene_text, "lint_report": lint_text, "style_stats": style_stats or ""},
     )
     response = judge.chat("You are a strict story quality judge.", user)
     return extract_json(response)
@@ -84,6 +84,7 @@ def judge_scene(
     scene_id: str,
     lint: LintReport | None,
     prompt_version: int,
+    style_stats: str = "",
 ) -> StoryEval:
     """Score one scene via the judge model (M2-D4 §3.3 + M4-B2)."""
     judge = LLMClient(settings, settings.llm.reviewer_model)
@@ -92,11 +93,11 @@ def judge_scene(
     lint_text = _lint_summary(lint)
 
     # M4-B2 AC2: retry once when the hook dimension lacks verbatim evidence.
-    data = _ask_judge(judge, template, scene_text, lint_text)
+    data = _ask_judge(judge, template, scene_text, lint_text, style_stats=style_stats)
     scores_raw = _scores_from(data)
     hook_row = next((r for r in scores_raw if r.get("dimension") == "hook"), None)
     if hook_row is not None and len(str(hook_row.get("evidence", "")).strip()) < 4:
-        data = _ask_judge(judge, template, scene_text, lint_text)
+        data = _ask_judge(judge, template, scene_text, lint_text, style_stats=style_stats)
         scores_raw = _scores_from(data)
 
     scores: list[DimensionScore] = []
@@ -150,8 +151,16 @@ def eval_story(
         settings.llm.reviewer_model = judge_model
 
     story, lint, prompt_version = load_story_artifact(store)
+    # M4-B1: the judge refers to cross-episode style stats (T4-DEV2).
+    from storyforge.stylestat import load_accumulated_stats
+
+    universe_dir = Path(settings.knowledge.kb_data_dir) / story.config.universe
+    accumulated = load_accumulated_stats(universe_dir)
     evals = [
-        judge_scene(settings, story, scene.scene_id, lint, prompt_version) for scene in story.scenes
+        judge_scene(
+            settings, story, scene.scene_id, lint, prompt_version, style_stats=accumulated
+        )
+        for scene in story.scenes
     ]
 
     out_dir = Path(settings.workspace_dir) / store.root.name / "evals" / "story"

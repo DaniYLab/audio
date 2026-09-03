@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING, Any
 from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import StoryForgeError, StoryGenerationError
 from storyforge.core.logging import get_logger
-from storyforge.core.types import GroundingLevel, Story, StoryConfig, StoryScene
+from storyforge.core.types import GroundingLevel, Story, StoryBeat, StoryConfig, StoryScene
 from storyforge.guard import CheckpointDeltaGuard, GuardError
 from storyforge.kb.compiler import BriefCompiler
+from storyforge.kb.episode_summary import EpisodeSummaryStore
 from storyforge.lint import LintIssue, LintReport, lint_scene
 from storyforge.providers.knowledge import build_universe_store
 from storyforge.stylestat import StyleStatsTracker
@@ -42,6 +43,25 @@ class StoryStage(Stage):
     def __init__(self, config: StoryConfig) -> None:
         self.config = config
 
+    def _apply_hook_mode(self, ctx: StageContext, outline: list[StoryBeat]) -> list[StoryBeat]:
+        """M4-A1: replace the cold-open beat per ``settings.story.hook``.
+
+        ``manual`` (or any failure) keeps the outline's own hook — an A/B
+        tooling hiccup must never fail the episode.
+        """
+        if not outline or not outline[0].beat_id.startswith("hook_00"):
+            return outline
+        mode = ctx.settings.story.hook
+        if mode == "manual":
+            return outline
+        from storyforge.m4tools import choose_hook_beat
+
+        chosen = choose_hook_beat(ctx.settings, self.config, mode, outline[0])
+        if chosen is not None:
+            logger.info("hook variant selected", mode=mode, beat=chosen.beat_id)
+            outline[0] = chosen
+        return outline
+
     def _build_ledger(self, ctx: StageContext) -> LedgerStore | None:
         """Inject the universe ledger (M3-W1); None when no ledger exists yet."""
         from storyforge.ledger.store import build_ledger
@@ -50,6 +70,22 @@ class StoryStage(Stage):
         if not universe_dir.exists():
             return None
         return build_ledger(universe_dir)
+
+    def _ledger_as_of(self, ctx: StageContext) -> str | None:
+        """M6-V2: anchor for the writer's ledger view — the last SHIPPED
+        episode (the one being written is the next). None when nothing shipped."""
+        from storyforge.ledger.loader import load_universe
+
+        universe_dir = ctx.settings.knowledge.ledgers_dir / self.config.universe
+        if not universe_dir.exists():
+            return None
+        try:
+            ledger = load_universe(universe_dir)
+        except Exception:
+            return None
+        if not ledger.episodes:
+            return None
+        return ledger.episodes[-1].episode_id
 
     def run(self, ctx: StageContext, *, force: bool = False) -> Story:
         from storyforge.providers.llm import build_writer
@@ -70,6 +106,8 @@ class StoryStage(Stage):
             ledger=ledger,
             compact_budget_tokens=ctx.settings.story.compact_when_over_tokens,
             compact_keep_recent_episodes=ctx.settings.story.compact_keep_recent_episodes,
+            summary_store=EpisodeSummaryStore(ctx.settings.knowledge.kb_data_dir),
+            ledger_as_of=self._ledger_as_of(ctx),
         )
         brief = compiler.build()
 
@@ -97,6 +135,8 @@ class StoryStage(Stage):
         try:
             outline, outline_prompt = writer.generate_outline(self.config, brief)
             prompt_rows.append({"section": "outline", "prompt": outline_prompt})
+            # M4-A1: hook config (a|b|auto) replaces the cold-open beat.
+            outline = self._apply_hook_mode(ctx, outline)
             scenes: list[StoryScene] = []
             for beat in outline:
                 brief = compiler.update(brief, beat)

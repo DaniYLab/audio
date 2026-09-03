@@ -389,6 +389,15 @@ class QdrantKnowledgeStore:
                 key="universe_id", match=models.MatchValue(value=self._universe_id)
             )
         ]
+        # M3-21 §8.3: license gate — when the config restricts allowed licenses,
+        # exclude chunks whose source license is not in the whitelist.
+        allowed = self._kb.allowed_licenses
+        if allowed:
+            must.append(
+                models.FieldCondition(
+                    key="license", match=models.MatchAny(any=allowed)
+                )
+            )
         filters = query.filters
         if filters:
             if filters.language:

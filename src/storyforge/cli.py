@@ -27,6 +27,7 @@ from rich.console import Console
 from rich.table import Table
 
 from storyforge import __version__
+from storyforge.core.artifacts import ArtifactStore
 from storyforge.core.config import Settings
 from storyforge.core.contracts import StageContext
 from storyforge.core.exceptions import StoryForgeError
@@ -75,6 +76,7 @@ def _execute_pipeline(
     local_files: list[Path],
     force: bool,
     only: list[str] | None,
+    license: str = "unknown",
 ) -> None:
     """Run stages sequentially with per-stage error handling (T2-DEV1).
 
@@ -111,7 +113,7 @@ def _execute_pipeline(
         # download
         try:
             set_current_stage("download")
-            download = DownloadStage(urls=urls, local_files=local_files)
+            download = DownloadStage(urls=urls, local_files=local_files, license=license)
             sources = download.run(ctx, force=force)
             ctx.mark_done("download", sources=len(sources))
         except StoryForgeError as exc:
@@ -159,6 +161,7 @@ def _execute_pipeline(
             raise typer.Exit(code=1) from exc
         flush_into_manifest(recorder, manifest)
         store.save_manifest(manifest)
+        _accumulate_style_stats(settings, store, story_config.universe)
 
         # review
         try:
@@ -194,6 +197,36 @@ def _execute_pipeline(
         flush_into_manifest(recorder, manifest)
         store.save_manifest(manifest)
 
+        # M4-A3: auto thumbnail (best-effort — publish reuses thumbnail.png).
+        try:
+            from storyforge.m4tools import auto_thumbnail
+
+            auto_thumbnail(settings, store)
+        except Exception:
+            logger.warning("auto thumbnail skipped (best-effort)")
+
+        # M6-W1: optional animation stage — runs only when an API provider is
+        # configured (fal_kling/veo); the default kenburns stays internal.
+        animated: dict[str, Path] = {}
+        if settings.animation.provider in ("fal_kling", "veo"):
+            try:
+                from storyforge.stages.animation import AnimationStage
+
+                anim_stage = AnimationStage(
+                    clips=clips,
+                    illustrations={i.scene_id: i for i in illustrations},
+                )
+                anim_result = anim_stage.run(ctx, force=force)
+                animated = {scene_id: clip.clip_path for scene_id, clip in anim_result.items()}
+                api_animated = sum(
+                    1 for c in anim_result.values() if c.provider != "kenburns_fallback"
+                )
+                ctx.mark_done("animation", animated=api_animated)
+                flush_into_manifest(recorder, manifest)
+                store.save_manifest(manifest)
+            except Exception:
+                logger.warning("animation stage failed — continuing without animated clips")
+
         # recap (T1-DEV2): prepend "Previously On" clip for episodes ≥ 2.
         equip_recap = getattr(story_config, "recap", True) is not False
         recap_segment = None
@@ -208,19 +241,42 @@ def _execute_pipeline(
                     image_dir = store.dir("06_images")
                     scene_images = sorted(image_dir.glob("*.png")) if image_dir.exists() else []
                     episode_number = len(ledger.episodes) + 1 if ledger.episodes else 2
+                    # M6-V2: recap sees only canon established up to the last
+                    # shipped episode — never facts from the future.
+                    as_of = ledger.episodes[-1].episode_id if ledger.episodes else None
                     recap_segment = execute_recap(
-                        settings, store, ledger, episode_number, scenes=scene_images
+                        settings,
+                        store,
+                        ledger,
+                        episode_number,
+                        scenes=scene_images,
+                        as_of_episode=as_of,
                     )
             except Exception:
                 logger.warning("recap generation failed — continuing")
 
         # video
+        # M6-W2: auto-classify music mood when not set explicitly.
+        if story_config.music_mood is None:
+            try:
+                from storyforge.music import load_moods
+                from storyforge.musicmood import classify_mood
+
+                moods = [m.mood for m in load_moods()]
+                auto_mood = classify_mood(story, ctx.settings, available_moods=moods)
+                if auto_mood:
+                    story_config.music_mood = auto_mood
+                    logger.info("music mood auto-classified", mood=auto_mood)
+            except Exception:
+                logger.warning("music mood auto-classification failed (no music)")
+
         try:
             video = VideoStage(
                 clips=clips,
                 illustrations=illustrations,
                 music_mood=story_config.music_mood,
                 recap=recap_segment,
+                animated=animated or None,
             )
             result = video.run(ctx, force=force)
             ctx.mark_done("video", seconds=result.duration_seconds)
@@ -236,7 +292,15 @@ def _execute_pipeline(
         store.save_manifest(manifest)
         reset_run_recorder()
         # Alerts fire on success AND on failure (T2-DEV1 AC1).
-        _check_alert(settings, project, manifest)
+        alerts = _check_alert(settings, project, manifest)
+        # M5-V4: auto-enqueue webhook events (run_end/run_fail/alert).
+        _enqueue_run_webhooks(
+            settings,
+            project,
+            manifest,
+            universe=story_config.universe,
+            alerts=alerts,
+        )
 
 
 def _mark_failed(ctx: StageContext, stage: str, exc: StoryForgeError) -> None:
@@ -254,12 +318,13 @@ def _mark_failed(ctx: StageContext, stage: str, exc: StoryForgeError) -> None:
 # --- M3-W6: alert on repeated stage failure -----------------------------------
 
 
-def _check_alert(settings: Settings, project: str, manifest: RunManifest) -> None:
+def _check_alert(settings: Settings, project: str, manifest: RunManifest) -> list[str]:
     """Append an alert line when the same stage failed in the previous run too.
 
     Reads the per-project failure history (``<workspace>/<project>/.failures.json``);
     after 2 consecutive failures of the same stage, a line is appended to
     ``<data>/alerts.md`` (M3-W6 §9.2). The counter resets on success.
+    Returns the alert lines (for webhook fan-out).
     """
     from storyforge.core.types import StageStatus
 
@@ -299,6 +364,91 @@ def _check_alert(settings: Settings, project: str, manifest: RunManifest) -> Non
         with (alerts_dir / "alerts.md").open("a", encoding="utf-8") as fh:
             fh.write("\n".join(alerts) + "\n")
         logger.warning("pipeline alert", project=project, alerts=alerts)
+    return alerts
+
+
+def _enqueue_run_webhooks(
+    settings: Settings,
+    project: str,
+    manifest: RunManifest,
+    universe: str,
+    alerts: list[str],
+) -> None:
+    """M5-V4 / M5-W2: enqueue webhook deliveries for run_end/run_fail/alert.
+
+    Best-effort — no targets registered for the universe is a no-op, and a
+    dispatcher failure never breaks the pipeline.
+    """
+    from storyforge.core.types import StageStatus
+    from storyforge.notify.webhook import WebhookDispatcher, WebhookStore
+
+    if not universe:
+        return
+    try:
+        dispatcher = WebhookDispatcher(
+            WebhookStore(Path(settings.workspace_dir).parent / "webhooks")
+        )
+        failed = [
+            stage
+            for stage, record in sorted(manifest.stages.items())
+            if record.status is StageStatus.FAILED
+        ]
+        if failed:
+            error = next(
+                (str(r.error) for r in manifest.stages.values() if r.error),
+                "stage failed",
+            )
+            dispatcher.enqueue(
+                universe,
+                "run_fail",
+                {"project": project, "stages": failed, "error": error},
+            )
+        else:
+            dispatcher.enqueue(universe, "run_end", {"project": project})
+        for alert in alerts:
+            dispatcher.enqueue(
+                universe, "alert", {"project": project, "message": alert}
+            )
+    except Exception as exc:
+        logger.warning("webhook enqueue failed (pipeline continues)", error=str(exc))
+
+
+def _accumulate_style_stats(settings: Settings, store: object, universe: str) -> None:
+    """M4-B1: write this episode's style stats into the universe's cross-episode
+    accumulation directory (``data/kb/<universe>/style_stats/``).
+
+    Best-effort: missing stats file / universe dir / ledger are harmless no-ops.
+    ``store`` is duck-typed to accept ``ArtifactStore`` or a test double.
+    """
+    from pathlib import Path
+
+    from storyforge.ledger.loader import load_universe
+    from storyforge.stylestat import StyleStats, accumulate_style_stats
+
+    root = getattr(store, "root", None)
+    if root is None:
+        return
+    stats_path = Path(root) / "04_story" / "style_stats.json"
+    if not stats_path.exists():
+        return
+    try:
+        stats = StyleStats.model_validate_json(stats_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return
+
+    universe_dir = Path(settings.knowledge.kb_data_dir) / universe
+    if not universe_dir.exists():
+        return
+
+    # Episode number: ledger episode count + 1 (or 1 when no ledger exists).
+    try:
+        ledger = load_universe(universe_dir)
+        number = len(ledger.episodes) + 1
+    except Exception:
+        number = 1
+    episode_id = f"ep_{number:03d}"
+    accumulate_style_stats(universe_dir, episode_id, stats)
+    logger.info("style stats accumulated", universe=universe, episode=episode_id)
 
 
 @app.command()
@@ -319,6 +469,14 @@ def run(
         bool, typer.Option("--force", help="Regenerate even if artifacts exist.")
     ] = False,
     only: Annotated[list[str] | None, typer.Option(help="Run only these stages.")] = None,
+    license: Annotated[
+        str,
+        typer.Option(
+            "--license",
+            help="Content license of the ingested sources "
+            "(cc0|cc_by|owned|permission|unknown).",
+        ),
+    ] = "unknown",
 ) -> None:
     """Execute the full pipeline for one project."""
     settings = _load_settings(config)
@@ -332,6 +490,7 @@ def run(
             local_files=local_file or [],
             force=force,
             only=only,
+            license=license,
         )
     except StoryForgeError as exc:
         console.print(f"[red]✗ {exc}[/red]")
@@ -1134,6 +1293,72 @@ def music(
     )
 
 
+# --- M3-V4: disk lifecycle ----------------------------------------------------
+
+
+@app.command()
+def clean(
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    keep_final: Annotated[
+        bool,
+        typer.Option(
+            "--keep-final",
+            help="Keep final.mp4 and delete 05_tts/06_images (batch-runner mode).",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Preview what would be deleted.")
+    ] = False,
+    older_than: Annotated[
+        str | None, typer.Option(help="Only delete files older than this (7d/48h/30m).")
+    ] = None,
+    tts_cache: Annotated[
+        bool, typer.Option("--tts-cache", help="Clean the TTS audio cache instead.")
+    ] = False,
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Reclaim disk: delete render intermediates of a project (M3-V4 §5)."""
+    from storyforge.cleanup import (
+        CleanError,
+        apply_report,
+        clean_project,
+        clean_tts_cache,
+        parse_age,
+    )
+
+    settings = _load_settings(config)
+    age: float | None = None
+    if older_than:
+        try:
+            age = parse_age(older_than)
+        except CleanError as exc:
+            console.print(f"[red]✗ {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+    if tts_cache:
+        report = clean_tts_cache(settings.tts.cache_dir, dry_run=dry_run)
+    else:
+        from storyforge.core.artifacts import ArtifactStore
+
+        store = ArtifactStore(settings.workspace_dir, project)
+        report = clean_project(store, keep_final=keep_final, dry_run=dry_run, older_than=age)
+    apply_report(report)
+
+    table = Table(title=f"Clean {'(dry-run)' if dry_run else ''} — {report.project}")
+    table.add_column("files")
+    table.add_column("freed bytes")
+    table.add_column("skipped")
+    table.add_row(
+        str(report.file_count), f"{report.freed_bytes:,}", str(len(report.skipped_files))
+    )
+    console.print(table)
+    for note in report.skipped_files[:10]:
+        console.print(f"  [dim]skip: {note}[/dim]")
+    console.print(
+        f"[green]✓[/green] {report.file_count} file(s) — {report.freed_bytes:,} bytes freed"
+    )
+
+
 # --- M4-A4: YouTube upload (draft mode) ---------------------------------------
 
 
@@ -1155,14 +1380,25 @@ def publish(
         bool,
         typer.Option("--setup-oauth", help="Print the OAuth consent URL (AC2)."),
     ] = False,
+    channel: Annotated[
+        str | None,
+        typer.Option(
+            "--channel",
+            help="Multi-channel: comma-separated credentials_ref values from "
+            "data/channels.yaml (M7-W4).",
+        ),
+    ] = None,
     config: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Upload the final video to YouTube (private draft by default) — A4.
 
     ``--draft`` (default) = ``privacyStatus: private``; ``--publish`` is the
     only way to go public and requires credentials + upload_enabled=true.
+    With ``--channel <ref>[,<ref>]`` the video goes to every registry channel
+    whose credentials_ref matches (shorts are vertical-cut first).
     """
     from storyforge.core.artifacts import ArtifactStore
+    from storyforge.publish.channels import load_channel_registry
     from storyforge.publish.receipt import (
         PublishReceipt,
         load_receipt,
@@ -1203,15 +1439,6 @@ def publish(
         console.print(f"[red]✗[/red] no final video yet: {video_path}")
         raise typer.Exit(code=1)
 
-    # Idempotency (AC3): skip when the same file hash was already uploaded.
-    receipt_path = store.dir("07_video") / "publish.json"
-    if not should_upload(receipt_path, video_path, privacy):
-        receipt = load_receipt(receipt_path)
-        assert receipt is not None
-        console.print(f"[green]✓[/green] already uploaded: {receipt.url} ({receipt.privacy})")
-        return
-
-    # Build metadata from the stored story config.
     from storyforge.core.types import Story
     from storyforge.publish.metadata import build_metadata
 
@@ -1220,6 +1447,29 @@ def publish(
         story.config, episode=1, total=1, template=settings.publish.metadata_template
     )
     meta.privacy = privacy  # type: ignore[assignment]
+
+    # -- M7-W4: multi-channel dispatch -------------------------------------
+    if channel:
+        refs = [ref.strip() for ref in channel.split(",") if ref.strip()]
+        registry = load_channel_registry()
+        specs = [c for c in registry.channels if c.credentials_ref in refs]
+        if not specs:
+            console.print(
+                f"[red]✗[/red] no registry channel matches {', '.join(refs)} — "
+                "run `storyforge channels add` first"
+            )
+            raise typer.Exit(code=1)
+        for spec in specs:
+            _publish_channel(settings, store, meta, video_path, spec)
+        return
+
+    # -- single-channel (legacy) -------------------------------------------
+    receipt_path = store.dir("07_video") / "publish.json"
+    if not should_upload(receipt_path, video_path, privacy):
+        receipt = load_receipt(receipt_path)
+        assert receipt is not None
+        console.print(f"[green]✓[/green] already uploaded: {receipt.url} ({receipt.privacy})")
+        return
 
     if settings.publish.upload_enabled is False and privacy == "private":
         # Allow dry-run without credentials for private drafts.
@@ -1260,6 +1510,228 @@ def publish(
     save_receipt(receipt_path, receipt)
     console.print(f"[green]✓[/green] uploaded ({privacy}): {url}")
     console.print(f"      receipt: {receipt_path}")
+
+
+def _publish_channel(
+    settings: Settings,
+    store: ArtifactStore,
+    meta: object,
+    video_path: Path,
+    spec: object,
+) -> None:
+    """Upload the project video to one registry channel (M7-W4).
+
+    - youtube → the final video as-is.
+    - shorts → a vertical 9:16 cut of the final video, uploaded to YouTube.
+    - tiktok → not supported yet (best-effort per M7 §2.2 — logged, skipped).
+
+    Receipts are written per platform (``07_video/publish_<platform>.json``) so
+    re-running only re-uploads the channels that changed.
+    """
+    from storyforge.publish.channels import ChannelSpec
+    from storyforge.publish.cuts import VerticalCutConfig, build_vertical_cut
+    from storyforge.publish.receipt import (
+        PublishReceipt,
+        save_receipt,
+        should_upload,
+    )
+    from storyforge.publish.youtube import YouTubeUploadError
+
+    spec = spec if isinstance(spec, ChannelSpec) else ChannelSpec.model_validate(spec)
+    if spec.platform == "tiktok":
+        console.print(
+            f"[yellow]tiktok channel '{spec.credentials_ref}' skipped — "
+            "TikTok Content API not wired yet (M7 stretch).[/yellow]"
+        )
+        return
+
+    target = video_path
+    if spec.platform == "shorts":
+        cut_path = video_path.parent / f"final_vertical_{spec.credentials_ref}.mp4"
+        if not cut_path.exists():
+            build_vertical_cut(
+                video_path,
+                VerticalCutConfig(hook_full_frame=True),
+                cut_path,
+                ffmpeg=settings.video.ffmpeg_bin,
+            )
+        target = cut_path
+
+    receipt_path = store.dir("07_video") / f"publish_{spec.platform}.json"
+    privacy = spec.default_privacy or "private"
+    if not should_upload(receipt_path, target, privacy):
+        console.print(
+            f"[green]✓[/green] {spec.platform} '{spec.credentials_ref}' already uploaded"
+        )
+        return
+
+    if settings.publish.upload_enabled is False and privacy == "private":
+        file_hash = PublishReceipt.hash_file(target)
+        save_receipt(
+            receipt_path,
+            PublishReceipt(
+                project=store.root.name,
+                video_id="dry-run",
+                privacy=privacy,
+                file_hash=file_hash,
+                url="https://youtu.be/dry-run",
+            ),
+        )
+        console.print(
+            f"[yellow]dry-run receipt for {spec.platform} '{spec.credentials_ref}'[/yellow]"
+        )
+        return
+
+    from storyforge.publish.youtube import YouTubeUploader
+
+    uploader = YouTubeUploader(
+        token_path=settings.publish.token_path,
+        client_id=settings.publish.youtube_client_id,
+        client_secret=settings.publish.youtube_client_secret.get_secret_value(),
+        refresh_token=settings.publish.youtube_refresh_token.get_secret_value(),
+    )
+    thumbnail_candidate = store.dir("06_images") / "thumbnail.png"
+    thumbnail_path: Path | None = thumbnail_candidate if thumbnail_candidate.exists() else None
+    try:
+        video_id = uploader.upload(target, thumbnail_path, meta)  # type: ignore[arg-type]
+    except YouTubeUploadError as exc:
+        console.print(f"[red]✗[/red] {spec.platform} upload failed: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    file_hash = PublishReceipt.hash_file(target)
+    save_receipt(
+        receipt_path,
+        PublishReceipt(
+            project=store.root.name,
+            video_id=video_id,
+            privacy=privacy,
+            file_hash=file_hash,
+            url=f"https://youtu.be/{video_id}",
+        ),
+    )
+    console.print(f"[green]✓[/green] {spec.platform} '{spec.credentials_ref}' uploaded: {video_id}")
+
+
+# --- M7-W4: channel registry + vertical cuts ----------------------------------
+
+
+channels_app = typer.Typer(
+    help="Channel registry — multi-platform publish destinations (M7-W4).",
+    no_args_is_help=True,
+)
+app.add_typer(channels_app, name="channels")
+
+
+@channels_app.command("add")
+def channels_add(
+    platform: Annotated[
+        str,
+        typer.Option(help="Platform: youtube | tiktok | shorts."),
+    ],
+    cred_ref: Annotated[
+        str, typer.Option(help="Credentials reference (key into the secret vault).")
+    ],
+    vertical: Annotated[
+        bool,
+        typer.Option("--vertical", help="Requires a vertical 9:16 cut."),
+    ] = False,
+    privacy: Annotated[
+        str, typer.Option(help="Default privacy: private | unlisted | public.")
+    ] = "private",
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Register a publishing channel (persisted to data/channels.yaml)."""
+    from storyforge.publish.channels import (
+        ChannelSpec,
+        load_channel_registry,
+        save_channel_registry,
+    )
+
+    platform = platform.lower()
+    if platform not in ("youtube", "tiktok", "shorts"):
+        console.print("[red]✗[/red] platform must be youtube | tiktok | shorts")
+        raise typer.Exit(code=1)
+    registry = load_channel_registry()
+    added = registry.add(
+        ChannelSpec(platform=platform, credentials_ref=cred_ref, vertical=vertical, default_privacy=privacy)  # type: ignore[arg-type]
+    )
+    if not added:
+        console.print(f"[yellow]channel already registered: {platform}/{cred_ref}[/yellow]")
+        return
+    save_channel_registry(registry)
+    console.print(
+        f"[green]✓[/green] channel added: {platform} ({cred_ref}, "
+        f"vertical={vertical}, privacy={privacy})"
+    )
+
+
+@channels_app.command("list")
+def channels_list(config: Annotated[Path | None, typer.Option()] = None) -> None:
+    """List registered channels."""
+    from storyforge.publish.channels import load_channel_registry
+
+    registry = load_channel_registry()
+    if not registry.channels:
+        console.print("[yellow]no channels registered (data/channels.yaml)[/yellow]")
+        return
+    table = Table(title="Channel registry")
+    table.add_column("platform")
+    table.add_column("credentials_ref")
+    table.add_column("vertical")
+    table.add_column("privacy")
+    for c in registry.channels:
+        table.add_row(c.platform, c.credentials_ref, str(c.vertical), c.default_privacy)
+    console.print(table)
+
+
+@channels_app.command("remove")
+def channels_remove(
+    platform: Annotated[str, typer.Option(help="Platform: youtube | tiktok | shorts.")],
+    cred_ref: Annotated[str, typer.Option(help="Credentials reference.")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Remove a registered channel."""
+    from storyforge.publish.channels import load_channel_registry, save_channel_registry
+
+    registry = load_channel_registry()
+    if not registry.remove(platform, cred_ref):
+        console.print(f"[red]✗[/red] no channel {platform}/{cred_ref}")
+        raise typer.Exit(code=1)
+    save_channel_registry(registry)
+    console.print(f"[green]✓[/green] removed {platform}/{cred_ref}")
+
+
+@app.command()
+def cut(
+    project: Annotated[str, typer.Option(help="Project id (workspace subdirectory).")],
+    out: Annotated[Path, typer.Option(help="Output path for the 9:16 video.")],
+    hook_full_frame: Annotated[
+        bool, typer.Option("--hook-full-frame", help="Keep the hook full-width.")
+    ] = True,
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Crop the final video to vertical 9:16 for Shorts/TikTok (M7-V2)."""
+    from storyforge.core.artifacts import ArtifactStore
+    from storyforge.publish.cuts import VerticalCutConfig, build_vertical_cut
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    store = ArtifactStore(settings.workspace_dir, project)
+    video_path = store.video_path()
+    if not video_path.exists():
+        console.print(f"[red]✗[/red] no final video yet: {video_path}")
+        raise typer.Exit(code=1)
+    try:
+        build_vertical_cut(
+            video_path,
+            VerticalCutConfig(hook_full_frame=hook_full_frame),
+            out,
+            ffmpeg=settings.video.ffmpeg_bin,
+        )
+    except Exception as exc:
+        console.print(f"[red]✗[/red] vertical cut failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]✓[/green] vertical cut written to {out}")
 
 
 # --- M5-V4: webhooks + usage export -------------------------------------------
@@ -1480,6 +1952,64 @@ def analytics_scene_retention(
     console.print(table)
 
 
+# --- M7-W3: agentic loop (proposals + approve) --------------------------------
+
+
+@analytics_app.command("proposals")
+def analytics_proposals(
+    universe: Annotated[str, typer.Option(help="Universe id.")],
+    threshold: Annotated[
+        float | None, typer.Option(help="Retention threshold (0-1). Default from settings.")
+    ] = None,
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Generate retention proposals for low-performing scenes (M7-W3)."""
+    from storyforge.analytics.agentic import generate_proposals
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    proposals = generate_proposals(
+        settings,
+        settings.analytics.warehouse_dir,
+        Path(settings.workspace_dir),
+        universe,
+        threshold=threshold,
+    )
+    if not proposals:
+        console.print("[yellow]no proposals generated (no low-retention video found)[/yellow]")
+        return
+    table = Table(title=f"Retention proposals — universe: {universe}")
+    table.add_column("project")
+    table.add_column("scene")
+    table.add_column("dimension")
+    table.add_column("change_kind")
+    table.add_column("expected_impact")
+    for p in proposals:
+        table.add_row(p.project, p.scene_id, p.dimension, p.change_kind, p.expected_impact)
+    console.print(table)
+    console.print(
+        f"[green]✓[/green] {len(proposals)} proposal(s) — approve via "
+        "`storyforge analytics approve --project X --id <created_at>`"
+    )
+
+
+@analytics_app.command("approve")
+def analytics_approve(
+    project: Annotated[str, typer.Option(help="Project id.")],
+    id: Annotated[str, typer.Option(help="Proposal id (its created_at timestamp).")],
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Approve one proposal → appended to data/analytics/decisions/ (M7-W3)."""
+    from storyforge.analytics.agentic import approve_proposal
+
+    settings = _load_settings(config)
+    approved = approve_proposal(settings.analytics.warehouse_dir, project, id)
+    if approved is None:
+        console.print(f"[red]✗[/red] no proposal with id '{id}' for project '{project}'")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/green] approved: {approved.scene_id} — {approved.change_kind}")
+
+
 # --- M4-A6: multi-worker queue -------------------------------------------------
 
 
@@ -1500,6 +2030,7 @@ def _make_job_runner(
                 local_files=[Path(f) for f in job.local_files],
                 force=False,
                 only=None,
+                license=job.license,
             )
             return True, None
         except StoryForgeError as exc:
@@ -1581,6 +2112,85 @@ def queue_cancel(
         console.print(f"[red]✗[/red] no queued job '{job_id}'")
         raise typer.Exit(code=1)
     console.print(f"[green]✓[/green] cancelled job '{job_id}'")
+
+
+@queue_app.command("add")
+def queue_add(
+    project: Annotated[str, typer.Option(help="Project id.")],
+    source_config: Annotated[
+        Path,
+        typer.Option(
+            help="Path to story_config.yaml.",
+            exists=True,
+            readable=True,
+        ),
+    ] = Path("config/story_config.example.yaml"),
+    universe: Annotated[str | None, typer.Option(help="Universe id.")] = None,
+    url: Annotated[
+        list[str] | None, typer.Option(help="YouTube URL. Repeatable.")
+    ] = None,
+    local_file: Annotated[
+        list[Path] | None,
+        typer.Option(
+            help="Local audio file. Repeatable.",
+            exists=True,
+            readable=True,
+        ),
+    ] = None,
+    scheduled_at: Annotated[
+        str | None,
+        typer.Option(help="ISO datetime (e.g. 2026-09-03T10:00:00)."),
+    ] = None,
+    license: Annotated[
+        str,
+        typer.Option(
+            help="Content license (cc0|cc_by|owned|permission|unknown)."
+        ),
+    ] = "unknown",
+    config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Enqueue a pipeline job for a worker — M4-A6 (AC3)."""
+    from storyforge.queue import QueueManager, new_job
+
+    settings = _load_settings(config)
+    manager = QueueManager(settings)
+    job = new_job(
+        project,
+        source_config=str(source_config),
+        universe=universe or "",
+        urls=url or [],
+        local_files=[str(p) for p in (local_file or [])],
+        license=license,
+    )
+    if scheduled_at:
+        from datetime import datetime
+
+        try:
+            dt = datetime.fromisoformat(scheduled_at)
+        except ValueError as exc:
+            console.print(f"[red]✗[/red] invalid ISO datetime: {exc}")
+            raise typer.Exit(code=1) from exc
+        job.scheduled_at = dt.timestamp()
+    manager.enqueue(job)
+    console.print(f"[green]✓[/green] job '{job.id}' enqueued for project '{project}'")
+
+
+# --- M5-W1: REST API server ---------------------------------------------------
+
+
+@app.command()
+def api(
+    host: Annotated[str, typer.Option(help="Bind host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Bind port.")] = 8000,
+    config: Annotated[Path | None, typer.Option(help="settings.yaml override.")] = None,
+) -> None:
+    """Run the REST API server (uvicorn) — M5-W1."""
+    from storyforge.api.app import main as api_main
+
+    settings = _load_settings(config)
+    configure_logging(settings)
+    console.print(f"[green]✓[/green] StoryForge API on http://{host}:{port} (docs: /docs)")
+    api_main(host=host, port=port, config=config)
 
 
 @app.callback()

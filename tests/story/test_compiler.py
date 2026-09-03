@@ -150,3 +150,62 @@ def test_story_config_requires_universe():
         StoryConfig(title="t", genre="g")
     with pytest.raises(ValidationError):
         StoryConfig(title="t", genre="g", universe="   ")
+
+
+def test_build_forwards_as_of_episode_to_ledger():
+    """M6-V2: BriefCompiler threads ``ledger_as_of`` into the ledger query so
+    the writer never sees facts established after the anchor episode."""
+    from storyforge.kb.types import Fact, FactKind, FactOrigin
+
+    seen: dict[str, object] = {}
+
+    class _FakeLedger:
+        def query(
+            self,
+            subject: str | None = None,
+            kind: object = None,
+            include_superseded: bool = False,
+            as_of_episode: str | None = None,
+        ) -> list[Fact]:
+            seen["subject"] = subject
+            seen["as_of_episode"] = as_of_episode
+            return [
+                Fact(
+                    fact_id="f0001",
+                    kind=FactKind.CHARACTER,
+                    subject="Lan",
+                    statement="Lan có chiếc lá đỏ",
+                    origin=FactOrigin.INVENTED,
+                    episode_id="ep_001",
+                )
+            ]
+
+    config = _config()
+    config.characters = [
+        CharacterSheet(name="Lan", appearance="girl", personality="curious")
+    ]
+    compiler = BriefCompiler(
+        _FakeStore(), config, ledger=_FakeLedger(), ledger_as_of="ep_002"
+    )
+    brief = compiler.build()
+    assert seen["as_of_episode"] == "ep_002"
+    assert brief.invented[0].statement == "Lan có chiếc lá đỏ"
+
+
+def test_build_as_of_none_queries_current():
+    """No anchor → query(as_of_episode=None), i.e. current canon."""
+    seen: dict[str, object] = {}
+
+    class _FakeLedger:
+        def query(self, subject: str | None = None, **kwargs: object) -> list[object]:
+            seen["subject"] = subject
+            seen["as_of_episode"] = kwargs.get("as_of_episode")
+            return []
+
+    config = _config()
+    config.characters = [
+        CharacterSheet(name="Lan", appearance="girl", personality="curious")
+    ]
+    compiler = BriefCompiler(_FakeStore(), config, ledger=_FakeLedger())
+    compiler.build()
+    assert seen["as_of_episode"] is None

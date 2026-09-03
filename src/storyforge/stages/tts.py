@@ -14,6 +14,7 @@ from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import TTSError
 from storyforge.core.logging import get_logger
 from storyforge.core.types import NarrationClip, Story
+from storyforge.providers.tts import engine_model
 from storyforge.textnorm import TextNormalizer
 
 logger = get_logger(__name__)
@@ -25,9 +26,13 @@ class TTSStage(Stage):
     def __init__(self, story: Story) -> None:
         self.story = story
 
-    def _cache_key(self, engine: str, voice: str, text: str) -> str:
-        """M3-W3: sha256 hash of (engine + voice + normalized_text)."""
-        raw = f"{engine}::{voice}::{text}"
+    def _cache_key(self, engine: str, model: str, voice: str, text: str) -> str:
+        """M3-W3 §8.2: sha256 of (engine + model + voice + normalized_text).
+
+        The model is part of the identity so a voice switch or a future model
+        bump never reuses a stale clip.
+        """
+        raw = f"{engine}::{model}::{voice}::{text}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _cache_path(self, cache_dir: Path, key: str) -> Path:
@@ -47,6 +52,7 @@ class TTSStage(Stage):
 
         clips: list[NarrationClip] = []
         cache_hits = 0
+        model = engine_model(ctx.settings)
         for scene in self.story.scenes:
             narration = scene.narration_text
             normalized_text: str | None = None
@@ -63,7 +69,7 @@ class TTSStage(Stage):
                 voice = voice_by_character.get(scene.beat.characters[0], default_voice)
 
             # M3-W3: TTS audio cache — skip the API on a cache hit.
-            cache_key = self._cache_key(engine, voice or "", narration)
+            cache_key = self._cache_key(engine, model, voice or "", narration)
             cache_path = self._cache_path(cache_dir, cache_key)
             if cache_path.exists() and not force:
                 cache_path.replace(out_path)

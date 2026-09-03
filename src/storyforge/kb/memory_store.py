@@ -111,6 +111,12 @@ class InMemoryKnowledgeStore:
             meta = chunk.metadata
             if meta.get("universe_id") != self._universe_id:
                 continue  # structural scope — the fake honors it too
+            # M3-21 §8.3: license gate — exclude chunks outside the whitelist.
+            allowed = self._kb.allowed_licenses
+            if allowed:
+                chunk_license = str(meta.get("license", "unknown"))
+                if chunk_license not in allowed:
+                    continue
             if filters:
                 if filters.language and meta.get("language") != filters.language:
                     continue

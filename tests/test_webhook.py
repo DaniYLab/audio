@@ -8,6 +8,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from storyforge.core.config import Settings
+from storyforge.core.types import RunManifest, StageStatus
 from storyforge.notify.webhook import (
     BACKOFF_SECONDS,
     WebhookDispatcher,
@@ -197,3 +199,70 @@ def test_deliveries_persist_across_reload(tmp_path: Path) -> None:
     deliveries = store2.load_deliveries()
     assert len(deliveries) == 1
     assert deliveries[0].status == "delivered"
+
+
+# -- pipeline auto-enqueue (M5-V4) ---------------------------------------------
+
+
+def _settings(tmp_path: Path) -> Settings:
+    # The webhook root derives from workspace_dir.parent, so nest the
+    # workspace one level deep to keep it under tmp_path.
+    return Settings(llm__api_key="test-key", workspace_dir=tmp_path / "ws")
+
+
+def test_enqueue_run_webhooks_success(tmp_path: Path) -> None:
+    """A fully-successful run on a known universe enqueues run_end."""
+    settings = _settings(tmp_path)
+    # Register a webhook target on the derived store path.
+    webhooks_root = tmp_path / "webhooks"
+    store = WebhookStore(webhooks_root)
+    store.add_target(WebhookTarget(universe_id="test_universe", url="https://hook.example.com"))
+
+    manifest = RunManifest(project="p1")
+    manifest.mark("story", StageStatus.DONE)
+
+    from storyforge.cli import _enqueue_run_webhooks
+
+    _enqueue_run_webhooks(settings, "p1", manifest, "test_universe", alerts=[])
+
+    deliveries = webhooks_root / "deliveries.jsonl"
+    assert deliveries.exists()
+    text = deliveries.read_text(encoding="utf-8")
+    assert "run_end" in text
+    assert "run_fail" not in text
+
+
+def test_enqueue_run_webhooks_failure(tmp_path: Path) -> None:
+    """A failed run enqueues run_fail and the alert events."""
+    settings = _settings(tmp_path)
+    webhooks_root = tmp_path / "webhooks"
+    store = WebhookStore(webhooks_root)
+    store.add_target(WebhookTarget(universe_id="test_universe", url="https://hook.example.com"))
+
+    manifest = RunManifest(project="p1")
+    manifest.mark("story", StageStatus.FAILED, error="bad LLM key")
+
+    from storyforge.cli import _enqueue_run_webhooks
+
+    _enqueue_run_webhooks(
+        settings, "p1", manifest, "test_universe",
+        alerts=["[alert] project p1 stage story fail x2"],
+    )
+
+    deliveries = webhooks_root / "deliveries.jsonl"
+    assert deliveries.exists()
+    text = deliveries.read_text(encoding="utf-8")
+    assert "run_fail" in text
+    assert "alert" in text
+
+
+def test_enqueue_run_webhooks_no_universe_noop(tmp_path: Path) -> None:
+    """Without a universe (or when empty) nothing is enqueued."""
+    settings = _settings(tmp_path)
+    manifest = RunManifest(project="p1")
+    manifest.mark("story", StageStatus.DONE)
+
+    from storyforge.cli import _enqueue_run_webhooks
+
+    _enqueue_run_webhooks(settings, "p1", manifest, "", alerts=[])
+    assert not (tmp_path / "webhooks" / "deliveries.jsonl").exists()

@@ -65,3 +65,55 @@ def test_as_of_unknown_episode_returns_all(ledger):
     # Unknown episode = no time anchor (returns everything live).
     facts = ledger.query(as_of_episode="ep_unknown")
     assert {f.fact_id for f in facts} == {"f0002", "f0041"}
+
+
+# -- loader.facts_as_of (recap/writer view) ------------------------------------
+
+
+@pytest.fixture()
+def universe_dir(tmp_path: Path) -> Path:
+    root = tmp_path / "ledgers" / "storyvu_loader"
+    store = build_ledger(root)
+    store.record_episode("ep_001", [_fact("f0001", "Bà Ngoại còn sống", "ep_001")])
+    store.record_episode("ep_002", [_fact("f0002", "Lan tìm thấy chiếc lá đỏ", "ep_002")])
+    store.supersede(
+        "f0001",
+        _fact("f0041", "Bà Ngoại đã qua đời", "ep_015"),
+        actor="reviewer",
+    )
+    return root
+
+
+def test_loader_facts_as_of_before_supersede(universe_dir: Path):
+    from storyforge.ledger.loader import facts_as_of, load_universe
+
+    universe = load_universe(universe_dir)
+    statements = {f.fact_id: f.statement for f in facts_as_of(universe, "ep_010")}
+    assert statements["f0001"] == "Bà Ngoại còn sống"
+    assert "f0041" not in statements
+
+
+def test_loader_facts_as_of_after_supersede(universe_dir: Path):
+    from storyforge.ledger.loader import facts_as_of, load_universe
+
+    universe = load_universe(universe_dir)
+    statements = {f.fact_id: f.statement for f in facts_as_of(universe, "ep_020")}
+    assert "f0001" not in statements
+    assert statements["f0041"] == "Bà Ngoại đã qua đời"
+
+
+def test_loader_facts_as_of_release_order(universe_dir: Path):
+    """Facts come back in release order (recap takes the tail as 'recent')."""
+    from storyforge.ledger.loader import facts_as_of, load_universe
+
+    universe = load_universe(universe_dir)
+    ids = [f.fact_id for f in facts_as_of(universe, "ep_002")]
+    assert ids == ["f0001", "f0002"]
+
+
+def test_loader_facts_as_of_unknown_anchor_is_current(universe_dir: Path):
+    from storyforge.ledger.loader import facts_as_of, load_universe
+
+    universe = load_universe(universe_dir)
+    ids = {f.fact_id for f in facts_as_of(universe, "ep_bogus")}
+    assert ids == {"f0002", "f0041"}

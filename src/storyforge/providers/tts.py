@@ -11,6 +11,18 @@ from storyforge.core.exceptions import TTSError
 from storyforge.core.retry import retry_external
 from storyforge.core.types import NarrationClip, StoryScene
 
+# The synthesis model per engine — part of the TTS cache identity (M3-W3 §8.2),
+# so switching models never reuses a stale clip.
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
+_EDGE_MODEL = "edge"
+
+
+def engine_model(settings: Settings) -> str:
+    """Stable model label for the configured engine (cache-key component)."""
+    if settings.tts.engine == "elevenlabs":
+        return ELEVENLABS_MODEL
+    return _EDGE_MODEL
+
 
 def build_tts(settings: Settings) -> TextToSpeech:
     engine = settings.tts.engine
@@ -101,7 +113,7 @@ class ElevenLabsTTS:
         }
         payload = {
             "text": scene.narration_text,
-            "model_id": "eleven_multilingual_v2",
+            "model_id": ELEVENLABS_MODEL,
             "output_format": "mp3_44100_128",
         }
 

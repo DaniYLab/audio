@@ -29,4 +29,6 @@ data/
 Thumbs.db
 .idea/
 .vscode/
-repo_ainovel
+repo_ainovel  
+# --- Agent tooling ---  
+.zcode/ 

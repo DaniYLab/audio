@@ -13,19 +13,25 @@ from pathlib import Path
 from storyforge.core.contracts import Stage, StageContext
 from storyforge.core.exceptions import DownloadError
 from storyforge.core.logging import get_logger
-from storyforge.core.types import SourceRef
+from storyforge.core.types import License, SourceRef
 
 logger = get_logger(__name__)
+
+_LICENSES: tuple[License, ...] = ("cc0", "cc_by", "owned", "permission", "unknown")
 
 
 class DownloadStage(Stage):
     name = "download"
 
     def __init__(
-        self, urls: list[str] | None = None, local_files: list[Path] | None = None
+        self,
+        urls: list[str] | None = None,
+        local_files: list[Path] | None = None,
+        license: str = "unknown",
     ) -> None:
         self.urls = urls or []
         self.local_files = local_files or []
+        self.license = license
 
     def run(self, ctx: StageContext, *, force: bool = False) -> list[SourceRef]:
         refs: list[SourceRef] = []
@@ -34,6 +40,17 @@ class DownloadStage(Stage):
         refs.extend(self._register_local(ctx))
         if not refs:
             raise DownloadError("no sources: provide --url or --local-file")
+        for ref in refs:
+            # M3 §8.3: the run-level license is stamped on every source; an
+            # explicit per-source value set later wins (never overwrite).
+            if ref.license != "unknown" or self.license == "unknown":
+                continue
+            if self.license not in _LICENSES:
+                raise DownloadError(
+                    f"invalid license: {self.license!r} "
+                    f"(expected one of {', '.join(_LICENSES)})"
+                )
+            ref.license = self.license
         return refs
 
     def _download_remote(self, ctx: StageContext) -> list[SourceRef]:

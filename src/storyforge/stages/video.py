@@ -20,6 +20,7 @@ from storyforge.core.types import (
     SubtitleLine,
     VideoResult,
 )
+from storyforge.providers.video_encoders import Encoder, encode_flags, resolve_encoder
 
 if TYPE_CHECKING:
     from storyforge.recap import RecapSegment
@@ -39,12 +40,17 @@ class VideoStage(Stage):
         illustrations: list[Illustration],
         music_mood: str | None = None,
         recap: RecapSegment | None = None,
+        animated: dict[str, Path] | None = None,  # M6-W1: scene_id -> motion clip
     ) -> None:
         self.clips = clips
         self.illustrations = {i.scene_id: i for i in illustrations}
         self.music_mood = music_mood
         # M4-A2: optional Previously-On recap clip prepended before scene 0.
         self.recap = recap
+        # M6-W1: pre-rendered animated clips replace the internal Ken Burns.
+        self.animated = animated or {}
+        # M3-V5: encoder resolved once per run (auto probes + caches).
+        self._encoder: Encoder | None = None
 
     def run(self, ctx: StageContext, *, force: bool = False) -> VideoResult:
         settings = ctx.settings.video
@@ -133,12 +139,7 @@ class VideoStage(Stage):
         if af_arg:
             cmd += ["-af", af_arg]
         cmd += [
-            "-c:v",
-            "libx264",
-            "-crf",
-            str(settings.crf),
-            "-preset",
-            settings.preset,
+            *encode_flags(self._encoder_for(ctx), settings.crf, settings.preset),
             "-c:a",
             "aac",
             "-b:a",
@@ -173,10 +174,36 @@ class VideoStage(Stage):
     def _render_segment(
         self, ctx: StageContext, clip: NarrationClip, illust: Illustration | None = None
     ) -> Path:
-        """Render one scene: still image + Ken Burns, duration = clip duration."""
+        """Render one scene's segment: a pre-rendered animated clip when one
+        exists (M6-W1), otherwise the still image + Ken Burns."""
         settings = ctx.settings.video
-        illustration = illust or self.illustrations[clip.scene_id]
         out = ctx.store.dir("logs") / f"seg_{clip.scene_id}.mp4"
+
+        animated_clip = self.animated.get(clip.scene_id)
+        if animated_clip is not None:
+            # M6-W1: mux the narration onto the motion clip (no zoompan).
+            cmd = [
+                settings.ffmpeg_bin,
+                "-y",
+                "-i",
+                str(animated_clip),
+                "-i",
+                str(clip.audio_path),
+                "-t",
+                str(clip.duration_seconds),
+                *encode_flags(self._encoder_for(ctx), settings.crf, settings.preset),
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-pix_fmt",
+                "yuv420p",
+                str(out),
+            ]
+            self._run_ffmpeg(cmd, ctx.store.dir("logs") / f"ffmpeg_{clip.scene_id}.log")
+            return out
+
+        illustration = illust or self.illustrations[clip.scene_id]
         frames = int(clip.duration_seconds * 30) + 1  # 30 fps
 
         vf = f"scale={ctx.settings.imaging.width}:{ctx.settings.imaging.height}"
@@ -200,12 +227,7 @@ class VideoStage(Stage):
             vf,
             "-t",
             str(clip.duration_seconds),
-            "-c:v",
-            "libx264",
-            "-crf",
-            str(settings.crf),
-            "-preset",
-            settings.preset,
+            *encode_flags(self._encoder_for(ctx), settings.crf, settings.preset),
             "-c:a",
             "aac",
             "-b:a",
@@ -279,6 +301,15 @@ class VideoStage(Stage):
         from storyforge.music import resolve_mood_file
 
         return resolve_mood_file(self.music_mood)
+
+    def _encoder_for(self, ctx: StageContext) -> Encoder:
+        """Resolve once per run (M3-V5 §6: auto probes + caches)."""
+        if self._encoder is None:
+            settings = ctx.settings.video
+            self._encoder = resolve_encoder(
+                settings.encoder, settings.ffmpeg_bin, ctx.settings.workspace_dir
+            )
+        return self._encoder
 
     def _audio_filter(self, ctx: StageContext, music_path: Path | None) -> str | None:
         """M3-W5 §9.1: FFmpeg filtergraph for background music mixing."""

@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from storyforge.core.exceptions import KnowledgeBaseError
 from storyforge.core.types import GroundingLevel, StoryBeat, StoryConfig
-from storyforge.ctxpack import maybe_compact
+from storyforge.ctxpack import maybe_compact, store_summary_text
+from storyforge.kb.episode_summary import EpisodeSummary, EpisodeSummaryStore
 from storyforge.kb.types import (
     CitedPassage,
     EntityFacts,
@@ -37,15 +38,47 @@ class BriefCompiler:
         ledger: LedgerStore | None = None,
         compact_budget_tokens: int = 0,
         compact_keep_recent_episodes: int = 10,
+        summary_store: EpisodeSummaryStore | None = None,
+        ledger_as_of: str | None = None,  # M6-V2: as_of_episode for the writer view
     ) -> None:
         self._store = store
         self._config = config
         self._ledger = ledger
         self._compact_budget = compact_budget_tokens  # M6-W3: 0 = off
         self._compact_recent = compact_keep_recent_episodes
+        # M6-W3: per-universe episode summaries feed the compacted store summary.
+        self._summary_store = summary_store
+        # M6-V2: facts visible to the writer are those valid at this episode.
+        self._ledger_as_of = ledger_as_of
         self._cited_chunk_ids: set[str] = set()
         self._degraded = False
         self._degrade_reason: str | None = None
+
+    def _compact_store_summary(self) -> str | None:
+        """M6-W3: compact narrative summary from ledger + episode summaries.
+
+        Built only from artifacts already on disk — no LLM call. Returns None
+        when compaction is off or nothing is available (graceful degrade).
+        """
+        if self._compact_budget <= 0 or self._ledger is None:
+            return None
+        try:
+            facts = self._ledger.query()
+        except Exception:
+            facts = []
+        established = [f for f in facts if f.origin is not FactOrigin.INVENTED]
+        invented = [f for f in facts if f.origin is FactOrigin.INVENTED]
+
+        summaries: dict[str, EpisodeSummary] = {}
+        if self._summary_store is not None:
+
+            summary_dir = self._summary_store.root / self._config.universe / "summaries"
+            if summary_dir.exists():
+                for path in sorted(summary_dir.glob("*.json"))[-10:]:
+                    summary = self._summary_store.load(self._config.universe, path.stem)
+                    if summary is not None:
+                        summaries[path.stem] = summary
+        return store_summary_text(established, invented, summaries)
 
     def build(self) -> KnowledgeBrief:
         """Pass 1 — theme pack + entity dossiers for the whole cast."""
@@ -86,6 +119,7 @@ class BriefCompiler:
             brief,
             budget=self._compact_budget,
             recent_episodes=self._compact_recent,
+            compiled_store_summary=self._compact_store_summary(),
         )
 
     def update(self, brief: KnowledgeBrief, beat: StoryBeat) -> KnowledgeBrief:
@@ -112,6 +146,7 @@ class BriefCompiler:
             brief,
             budget=self._compact_budget,
             recent_episodes=self._compact_recent,
+            compiled_store_summary=self._compact_store_summary(),
         )
 
     # -- helpers -----------------------------------------------------------
@@ -145,11 +180,15 @@ class BriefCompiler:
         return passages
 
     def _inject_ledger_facts(self, brief: KnowledgeBrief, name: str) -> None:
-        """Pull ledger facts for ``name`` and split by origin (M3-W1)."""
+        """Pull ledger facts for ``name`` and split by origin (M3-W1).
+
+        When ``ledger_as_of`` is set (M6-V2), only facts valid at that episode
+        are visible — the writer never sees facts from the future.
+        """
         if self._ledger is None:
             return
         try:
-            facts = self._ledger.query(subject=name)
+            facts = self._ledger.query(subject=name, as_of_episode=self._ledger_as_of)
         except Exception:
             return  # ledger unavailable — degrade silently
         for fact in facts:

@@ -283,6 +283,23 @@ def test_job_save_roundtrip(tmp_path: Path) -> None:
     assert restored.urls == j.urls == ["https://example.com"]
 
 
+def test_job_save_roundtrip_license(tmp_path: Path) -> None:
+    """M3-21: license field is persisted and round-tripped."""
+    j = new_job("p1", license="cc0", universe="test_u")
+    path = tmp_path / "license_job.yaml"
+    j.save(path)
+    restored = type(j).load(path)
+    assert restored.license == "cc0"
+    assert j.license == "cc0"
+
+
+def test_enqueue_creates_yaml(manager: QueueManager, job: JobSpec) -> None:
+    path = manager.enqueue(job)
+    assert path.exists()
+    assert path.suffix == ".yaml"
+    assert job.id in str(path)
+
+
 # -- Lease helpers -----------------------------------------------------------
 
 

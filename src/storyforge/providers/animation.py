@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from storyforge.core.config import Settings
 from storyforge.core.exceptions import VideoAssemblyError
+from storyforge.providers.video_encoders import encode_flags, resolve_encoder
 
 
 class MotionSpec(BaseModel):
@@ -76,12 +77,15 @@ class KenBurnsFallback:
             vf,
             "-t",
             str(duration_seconds),
-            "-c:v",
-            "libx264",
-            "-crf",
-            str(self._settings.video.crf),
-            "-preset",
-            self._settings.video.preset,
+            *encode_flags(
+                resolve_encoder(
+                    self._settings.video.encoder,
+                    self._settings.video.ffmpeg_bin,
+                    self._settings.workspace_dir,
+                ),
+                self._settings.video.crf,
+                self._settings.video.preset,
+            ),
             "-pix_fmt",
             "yuv420p",
             str(out_path),

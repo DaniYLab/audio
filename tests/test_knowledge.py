@@ -118,3 +118,57 @@ def test_to_hit_source_summary_default_none() -> None:
     point = _FakePoint(payload={})
     hit = store._to_hit(point)  # type: ignore[attr-defined]
     assert hit.source_summary is None
+
+
+# -- M3-21 §8.3: allowed_licenses search gate ----------------------------------
+
+
+def _memory_store(tmp_path: Path, allowed: list[str] | None = None) -> object:
+    settings = Settings(
+        llm__api_key="test-key",
+        workspace_dir=tmp_path / "ws",
+        knowledge__store="memory",
+    )
+    settings.knowledge.kb_data_dir = tmp_path / "kb"
+    if allowed is not None:
+        settings.knowledge.allowed_licenses = allowed
+    from storyforge.kb.memory_store import build_memory_store
+
+    return build_memory_store(settings, "u")
+
+
+def _license_transcript(source_id: str, license: str) -> Transcript:
+    from storyforge.core.types import SourceRef, TranscriptSegment
+
+    return Transcript(
+        source=SourceRef(id=source_id, license=license),  # type: ignore[arg-type]
+        language="vi",
+        audio_path=Path("fake.m4a"),
+        segments=[TranscriptSegment(start=0.0, end=5.0, text=f"câu chuyện {source_id} đặc biệt")],
+    )
+
+
+def _search_sources(store: object) -> set[str]:
+    from storyforge.kb.types import SearchIntent, SearchQuery
+
+    hits = store.search(  # type: ignore[attr-defined]
+        SearchQuery(text="câu chuyện", intent=SearchIntent.THEME, top_k=10)
+    )
+    return {h.source_id for h in hits}
+
+
+def test_license_filter_excludes_disallowed_sources(tmp_path: Path) -> None:
+    store = _memory_store(tmp_path, allowed=["cc0"])
+    store.ingest(_license_transcript("src_cc0", "cc0"))  # type: ignore[attr-defined]
+    store.ingest(_license_transcript("src_unknown", "unknown"))  # type: ignore[attr-defined]
+    sources = _search_sources(store)
+    assert "src_cc0" in sources
+    assert "src_unknown" not in sources
+
+
+def test_license_filter_empty_allows_all(tmp_path: Path) -> None:
+    store = _memory_store(tmp_path)  # allowed_licenses=[] -> no gate
+    store.ingest(_license_transcript("src_cc0", "cc0"))  # type: ignore[attr-defined]
+    store.ingest(_license_transcript("src_unknown", "unknown"))  # type: ignore[attr-defined]
+    sources = _search_sources(store)
+    assert {"src_cc0", "src_unknown"} <= sources

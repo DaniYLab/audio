@@ -81,14 +81,26 @@ def build_recap_plan(
     universe_dir: Path,
     *,
     scenes: list[Path] | None = None,
+    as_of_episode: str | None = None,
 ) -> RecapPlan:
-    """Deterministic recap plan from ledger facts + summaries + scene images."""
+    """Deterministic recap plan from ledger facts + summaries + scene images.
+
+    ``as_of_episode`` (M6-V2) restricts the facts to those valid at that
+    episode — typically the previous episode's id so the recap only mentions
+    canon established up to the last instalment.
+    """
     enabled, reason = should_recap(config, episode_number)
     if not enabled:
         return RecapPlan(enabled=False, skip_reason=reason)
 
-    facts = ledger.all_facts
-    recent = sorted(facts, key=lambda f: f.episode_id)[-_RECAP_FACT_CAP:]
+    if as_of_episode is not None:
+        from storyforge.ledger.loader import facts_as_of
+
+        facts = facts_as_of(ledger, as_of_episode)
+    else:
+        facts = ledger.all_facts
+    # Facts are already in release order; take the most recent cap.
+    recent = [f for f in facts if f.superseded_by is None][-_RECAP_FACT_CAP:]
     if not recent:
         return RecapPlan(enabled=False, skip_reason="no established facts yet")
 
@@ -173,12 +185,17 @@ def execute_recap(
     *,
     scenes: list[Path] | None = None,
     synth: Callable[[str, Path], None] | None = None,
+    as_of_episode: str | None = None,
 ) -> RecapSegment | None:
     """Build + render the recap for an episode (T1-DEV2, M4-A2).
 
     Returns a ``RecapSegment`` (TTS audio + one montage still + subtitle) that
     VideoStage prepends before scene 0 — or ``None`` when recap is disabled,
     it's episode 1, or no facts exist yet.
+
+    ``as_of_episode`` (M6-V2) restricts the recap to canon valid at that
+    episode — pass the previous episode's id so the recap never leaks facts
+    from the future.
 
     ``synth`` defaults to the configured TTS provider; tests inject a fake.
     """
@@ -202,6 +219,7 @@ def execute_recap(
         summaries,
         Path(settings.knowledge.kb_data_dir) / story.config.universe,
         scenes=scenes,
+        as_of_episode=as_of_episode,
     )
     if not plan.enabled:
         logger.info("recap skipped", reason=plan.skip_reason)

@@ -58,6 +58,50 @@ class UniverseLedger:
         return facts
 
 
+def episode_key(episode_id: str) -> tuple[int, int] | None:
+    """Parse an episode anchor (``ep_012`` / ``s2ep_101``) into its order key.
+
+    Returns None when the id is not a parseable anchor (facts without one are
+    excluded from bi-temporal views).
+    """
+    match = re.fullmatch(r"(?:s(\d+))?(?:ep[_-]?(\d+))", episode_id.strip().lower())
+    if match is None or match.group(2) is None:
+        return None
+    season = int(match.group(1)) if match.group(1) is not None else 0
+    return (season, int(match.group(2)))
+
+
+def facts_as_of(universe: UniverseLedger, as_of_episode: str) -> list[Fact]:
+    """Facts still valid at ``as_of_episode`` (M6-V2 bi-temporal view).
+
+    A fact is valid at N when it was established at or before N AND not yet
+    superseded by a replacement established at or before N. Facts are returned
+    in release order (recap/writer consume the tail as "most recent").
+    """
+    anchor = episode_key(as_of_episode)
+    if anchor is None:
+        # Unknown anchor behaves like "current canon": superseded facts drop.
+        return [f for f in universe.all_facts if f.superseded_by is None]
+
+    by_id = {f.fact_id: f for f in universe.all_facts}
+    out: list[Fact] = []
+    for episode in universe.episodes:
+        if episode.order_key > anchor:
+            break  # nothing established after the anchor is visible
+        for fact in episode.facts:
+            if fact.superseded_by is None:
+                out.append(fact)
+                continue
+            replacement = by_id.get(fact.superseded_by)
+            if replacement is None:
+                continue  # superseded by an unknown fact -> not canon
+            rep_key = episode_key(replacement.episode_id) if replacement.episode_id else None
+            if rep_key is None or rep_key <= anchor:
+                continue  # replacement established at or before the anchor
+            out.append(fact)  # replacement lands after the anchor → old fact still valid
+    return out
+
+
 def load_universe(root: Path) -> UniverseLedger:
     """Parse every ``s<N>/ep<M>.yaml`` under ``root``.
 

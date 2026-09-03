@@ -40,6 +40,8 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "types-pyyaml",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]

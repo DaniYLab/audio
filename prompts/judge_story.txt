@@ -1,7 +1,7 @@
 ---
-version: 2
-changelog: "M4-B2: score 0-100, evidence bắt buộc cho mọi chiều, hook bắt buộc trích nguyên văn"
-eval_ref: "evals/story/2026-09-15_v2.json"
+version: 3
+changelog: "M4-B1: inject accumulated cross-episode style stats into the rubric (tts_ready/visual reference)"
+eval_ref: "evals/story/2026-09-15_v3.json"
 ---
 You are a strict story quality judge. Score the story below on six independent
 dimensions, each on a **0-100** scale. You MUST quote verbatim evidence from
@@ -39,6 +39,9 @@ SCENE:
 
 LINT REPORT (may be empty):
 {lint_report}
+
+STYLE STATS (accumulated across previous episodes — refer to tts_ready and visual dimensions):
+{style_stats}
 
 RULES:
 - hook is scored ONLY for the first scene (otherwise score 50 with evidence "n/a").

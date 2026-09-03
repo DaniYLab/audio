@@ -140,3 +140,42 @@ tức là các tính năng "đã ship" trên giấy có thể không hoạt đ�
 end-to-end. Kế hoạch xử lý đề xuất: sprint "wiring + fix P0" 3–5 ngày trước
 khi mở bất kỳ feature mới nào, kèm 1 bài test end-to-end chạy pipeline thật
 làm cổng chặn (giống conformance suite của KB).
+
+---
+
+## 8. Audit hậu sprint hoàn thiện (09/2026)
+
+> Cập nhật sau sprint "hoàn thiện sản phẩm" (bổ sung cho mục 6/7). Đối chiếu
+> lại từng hạng mục PARTIAL/MISSING còn sót. **403 unit tests + e2e gate xanh;
+> ruff + mypy strict sạch.**
+
+### Mới IMPLEMENTED
+
+| Hạng mục | Trước | Sau | Bằng chứng |
+|---|---|---|---|
+| M3-V4 Disk lifecycle | MISSING | ✅ | `storyforge clean` (`src/storyforge/cleanup.py`) — dry-run/keep-final/older-than/tts-cache; `tests/test_cleanup.py` (8) |
+| M3-V5 NVENC/QSV | MISSING | ✅ | `providers/video_encoders.py` — probe + cache + args map; wire vào VideoStage + KenBurnsFallback; `tests/test_video_encoders.py` (11) |
+| M3-20 TTS cache model | PARTIAL | ✅ | cache key gồm `model` (`engine_model()` trong providers/tts.py) |
+| M3-21 License | PARTIAL | ✅ | `--license` trên `run`/job spec; `allowed_licenses` filter Qdrant + memory store; test license gate |
+| M4-A1 Hook config | PARTIAL | ✅ | `m4tools.choose_hook_beat()` (a/b/auto/manual) wire vào StoryStage; `tests/test_hook_wiring.py` (5) |
+| M4-A3 Thumbnail | PARTIAL | ✅ | Pipeline auto-sinh thumbnail sau imaging; ưu tiên `StoryConfig.thumbnail_scene` |
+| M4-B1 Stylestat | PARTIAL | ✅ | `accumulate_style_stats` wire vào pipeline; judge nhận `{style_stats}` (prompt v3); `tests/test_stylestat_wiring.py` (6) |
+| M5-V4 Webhook | PARTIAL | ✅ | Auto-enqueue `run_end`/`run_fail`/`alert` trong `_execute_pipeline` finally |
+| M6-V2 Bi-temporal | PARTIAL | ✅ | `loader.facts_as_of()` + wire recap (`as_of_episode`), BriefCompiler (`ledger_as_of`), StoryStage |
+| M6-W2 Music auto | PARTIAL | ✅ | `classify_mood` fallback khi `music_mood` không set; `tests/test_music_auto.py` (3) |
+| M6-W3 ctxpack | PARTIAL | ✅ | `store_summary_text()` từ ledger + summaries (0 LLM call) wire qua BriefCompiler |
+| M5-W1 API | PARTIAL | ✅ | Endpoints jobs/cost/lint/review/manifest/webhooks + rate limit + RBAC + `storyforge api` (uvicorn); `tests/test_api_extended.py` (14) |
+| M7-W4 Channels | PARTIAL | ✅ | `channels add/list/remove`, `publish --channel` multi-dispatch, `cut` vertical; `tests/test_channels.py` (4) |
+| M7-W3 Agentic | PARTIAL | ✅ | `analytics proposals`/`approve` — heuristic fallback + LLM khi bật; `tests/test_agentic.py` (4) |
+| Queue enqueue | — | ✅ | `storyforge queue add` + `QueueManager.enqueue()` |
+| M6-W1 AnimationStage | PARTIAL | ✅ (có gate) | `stages/animation.py` + VideoStage consume clip (`animated=` param) + wire pipeline khi `SF__ANIMATION__PROVIDER=fal_kling|veo`; default kenburns giữ nguyên trong VideoStage (tránh double-render); fail → fallback kenburns; `tests/test_animation_stage.py` (5). Provider API thật (fal_kling/veo) vẫn chưa implement — factory hiện trả KenBurnsFallback |
+
+### Còn MISSING / deferred (cần quyết định ngoài code)
+
+| Hạng mục | Lý do giữ lại |
+|---|---|
+| M6-W1 AnimationStage | Cần FalKling/Veo provider thật (đã wire AnimationStage + tests; xem bảng trên) |
+| M5 Postgres/React/editor | Phụ thuộc dịch vụ ngoài + quyết định stack (registry layer) |
+| M7 billing (Stripe) | Cần tài khoản Stripe + webhook secret |
+| assets/music_cc0/*.mp3 | BA cung cấp file (chỉ có LICENSES.md) |
+| M3 clean sau job tự động | Batch runner gọi `clean --keep-final` — chờ quyết định vận hành |

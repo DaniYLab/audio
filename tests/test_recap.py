@@ -122,3 +122,55 @@ def test_recap_plan_word_cap_trims(universe: Path, config: StoryConfig):
         universe.parent,
     )
     assert plan.word_count <= 90
+
+
+def test_recap_plan_as_of_excludes_future_facts(tmp_path: Path, config: StoryConfig):
+    """M6-V2: as_of_episode keeps the recap anchored at the previous episode —
+    a superseding fact from the future must not leak into it."""
+    root = tmp_path / "ledgers" / "storyvu_asof"
+    store = build_ledger(root)
+    store.record_episode("ep_001", [_fact("f0001", "Lan mất chiếc lá đỏ trong mưa", "ep_001")])
+    store.record_episode("ep_002", [_fact("f0002", "Bà Ngoại tặng Lan chiếc lá mới", "ep_002")])
+    # ep_003 supersedes f0001 — but a recap of ep_002 (as_of ep_002) must not
+    # know about it.
+    store.record_episode(
+        "ep_003",
+        [_fact("f0003", "Lan tìm thấy chiếc lá trong hộp gỗ cũ", "ep_003")],
+    )
+
+    ledger = load_universe(root)
+    plan = build_recap_plan(
+        config,
+        3,
+        ledger,
+        EpisodeSummaryStore(root.parent / "kb"),
+        root.parent,
+        as_of_episode="ep_002",
+    )
+    assert plan.enabled
+    # Only facts valid at ep_002 appear — the ep_003 fact is invisible.
+    assert "chiếc lá trong hộp gỗ" not in plan.script
+
+
+def test_recap_plan_as_of_after_supersede_uses_replacement(tmp_path: Path, config: StoryConfig):
+    root = tmp_path / "ledgers" / "storyvu_sup"
+    store = build_ledger(root)
+    store.record_episode("ep_001", [_fact("f0001", "Lan mất chiếc lá đỏ trong mưa", "ep_001")])
+    store.supersede(
+        "f0001",
+        _fact("f0005", "Lan tìm lại được chiếc lá đỏ", "ep_003"),
+        actor="reviewer",
+    )
+
+    ledger = load_universe(root)
+    plan = build_recap_plan(
+        config,
+        4,
+        ledger,
+        EpisodeSummaryStore(root.parent / "kb"),
+        root.parent,
+        as_of_episode="ep_003",
+    )
+    assert plan.enabled
+    # The replacement fact is visible at ep_003.
+    assert "tìm lại được" in plan.script

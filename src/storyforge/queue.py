@@ -53,6 +53,7 @@ class JobSpec:
     owner: str = "cli"  # AC3
     scheduled_at: float | None = None  # epoch; None = run now
     tier: str = "standard"
+    license: str = "unknown"  # M3 §8.3: source content license for the run
 
     @classmethod
     def load(cls, path: Path) -> JobSpec:
@@ -67,6 +68,7 @@ class JobSpec:
             owner=str(data.get("owner", "cli")),
             scheduled_at=data.get("scheduled_at"),
             tier=str(data.get("tier", "standard")),
+            license=str(data.get("license", "unknown")),
         )
 
     def save(self, path: Path) -> None:
@@ -87,6 +89,7 @@ class JobSpec:
             "owner": self.owner,
             "scheduled_at": self.scheduled_at,
             "tier": self.tier,
+            "license": self.license,
         }
 
 
@@ -153,6 +156,14 @@ class QueueManager:
             d.mkdir(parents=True, exist_ok=True)
 
     # -- queue listing -------------------------------------------------------
+
+    def enqueue(self, job: JobSpec) -> Path:
+        """Add a job to the queued bucket (write the spec file)."""
+        self.queue_dir.mkdir(parents=True, exist_ok=True)
+        path = self.queue_dir / f"{job.id}.yaml"
+        job.save(path)
+        logger.info("job enqueued", job=job.id, project=job.project)
+        return path
 
     def queued(self) -> list[Path]:
         return sorted(self.queue_dir.glob("*.yaml"))
