@@ -69,7 +69,7 @@ def classify_tier(stage: str, settings: Settings) -> str:
                 model = (
                     settings.imaging.fal_model
                     if settings.imaging.provider == "fal"
-                    else "gpt-image-1"
+                    else settings.imaging.openai_model
                 )
                 image_models = preset.get("images")
                 if isinstance(image_models, list) and model in image_models:
@@ -129,11 +129,17 @@ def _compute_from_prices(
 
     # Images
     if stage == "imaging":
-        images = int(metrics.get("images_generated", 0) or 0)
+        images = int(metrics.get("images_generated", 0) or 0) or int(
+            metrics.get("images", 0) or 0
+        )
         if images:
             had_metric = True
             img_prices = prices.get("images", {})
-            image_model = settings.imaging.fal_model if settings.imaging.provider == "fal" else "gpt-image-1"
+            image_model = (
+                settings.imaging.fal_model
+                if settings.imaging.provider == "fal"
+                else settings.imaging.openai_model
+            )
             per_image = float(img_prices.get(image_model, {}).get("per_image", 0) or 0)
             total += images * per_image
 

@@ -98,33 +98,46 @@ class OpenAIEmbeddingProvider:
 
 
 class BGEM3LocalEmbeddingProvider:
-    """sentence-transformers BGE-M3: dense + sparse (lexical weights) in one pass.
+    """BGE-M3 via FlagEmbedding: dense + sparse (lexical weights) in one pass.
 
-    Heavy import (torch) stays inside the method per CONVENTIONS.md.
+    Heavy import (torch/FlagEmbedding) and the model load stay inside the
+    method per CONVENTIONS.md; the loaded model is cached on the instance so
+    repeated encode calls within a process do not reload weights.
     """
 
     def __init__(self, settings: EmbeddingSettings) -> None:
         self._settings = settings
+        self._model: Any = None
+
+    def _load_model(self) -> Any:
+        if self._model is None:
+            from FlagEmbedding import BGEM3FlagModel  # type: ignore[import-untyped]
+
+            logger.info("loading BGE-M3 model", model=self._settings.model)
+            self._model = BGEM3FlagModel(
+                self._settings.model,
+                use_fp16=True,
+            )
+        return self._model
 
     def encode(self, texts: list[str]) -> list[Embedding]:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
-
-        model = SentenceTransformer(self._settings.model)
-        raw: Any = model.encode(
+        model = self._load_model()
+        out: dict[str, Any] = model.encode(
             texts,
+            return_dense=True,
             return_sparse=True,
-            show_progress_bar=False,
+            return_colbert_vecs=False,
         )
-        outputs: dict[str, Any] = dict(raw)
-        dense_all: list[Any] = list(outputs["dense_embeddings"])
-        sparse_all: dict[int, dict[str, float]] = dict(outputs["sparse_embeddings"])
+        dense_all: list[Any] = list(out["dense_vecs"])
+        sparse_all: list[dict[Any, Any]] = list(out["lexical_weights"])
         embeddings: list[Embedding] = []
         for i in range(len(texts)):
             dense = [float(x) for x in dense_all[i]]
-            weights = dict(sparse_all.get(i, {}))
-            indices = [int(k) for k in weights]
-            values = [float(v) for v in weights.values()]
-            embeddings.append(Embedding(dense, SparseVector(indices, values)))
+            weights = {int(k): float(v) for k, v in sparse_all[i].items() if float(v) > 0}
+            indices = sorted(weights)
+            embeddings.append(
+                Embedding(dense, SparseVector(indices, [weights[j] for j in indices]))
+            )
         return embeddings
 
 

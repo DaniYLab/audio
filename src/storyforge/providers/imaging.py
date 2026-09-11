@@ -51,7 +51,11 @@ class FalImageGenerator:
         settings = self._settings
         # T3-DEV2: a character reference image switches to the reference-capable
         # model (flux-pro/kontext) and sends the image data alongside the prompt.
-        model = settings.imaging.fal_ref_model if reference_image is not None else settings.imaging.fal_model
+        model = (
+            settings.imaging.fal_ref_model
+            if reference_image is not None
+            else settings.imaging.fal_model
+        )
         url = f"https://fal.run/{model}"
         headers = {"Authorization": f"Key {settings.imaging.fal_key.get_secret_value()}"}
         payload: dict[str, object] = {
@@ -102,6 +106,8 @@ class OpenAIImageGenerator:
     def generate_from_prompt(
         self, prompt: str, out_path: str, reference_image: Path | None = None
     ) -> Illustration:
+        import base64
+
         import httpx
 
         url = f"{self._settings.llm.base_url.rstrip('/')}/images/generations"
@@ -114,8 +120,6 @@ class OpenAIImageGenerator:
         # M3-W4: reference images are passed through when the endpoint supports
         # them; gpt-image-1 uses the images API which accepts a base64 ref.
         if reference_image is not None:
-            import base64
-
             ref_b64 = base64.b64encode(reference_image.read_bytes()).decode("utf-8")
             payload["reference_image"] = f"data:image/png;base64,{ref_b64}"
 

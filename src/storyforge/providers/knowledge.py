@@ -50,7 +50,7 @@ class ChromaKnowledgeStore:
     def _embed(self, texts: list[str]) -> list[list[float]]:
         provider = self._settings.embedding.provider
         if provider == "bge_m3_local":
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+            from sentence_transformers import SentenceTransformer
 
             model = SentenceTransformer(self._settings.embedding.model)
             return [vec.tolist() for vec in model.encode(texts)]

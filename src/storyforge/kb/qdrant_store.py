@@ -18,6 +18,7 @@ citations and idempotent upserts are unaffected.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any
 
 from storyforge.core.config import Settings
@@ -81,11 +82,17 @@ class QdrantKnowledgeStore:
         self._settings = settings
         self._universe_id = universe_id
         self._kb = settings.knowledge
-        self._client = QdrantClient(
-            url=settings.knowledge.qdrant_url,
-            api_key=settings.knowledge.qdrant_api_key.get_secret_value() or None,
-            timeout=int(settings.knowledge.qdrant_timeout_seconds),
-        )
+        # Local file-backed Qdrant when qdrant_path is set (Colab/containers
+        # without a server); otherwise connect to the configured server URL.
+        if self._kb.qdrant_path is not None:
+            Path(self._kb.qdrant_path).mkdir(parents=True, exist_ok=True)
+            self._client = QdrantClient(path=str(self._kb.qdrant_path))
+        else:
+            self._client = QdrantClient(
+                url=settings.knowledge.qdrant_url,
+                api_key=settings.knowledge.qdrant_api_key.get_secret_value() or None,
+                timeout=int(settings.knowledge.qdrant_timeout_seconds),
+            )
         # ``embedder``/``reranker``/``summarizer`` injection lets tests pass
         # deterministic fakes; defaults build the configured providers lazily
         # on first use so health() works without embedding credentials.
@@ -393,11 +400,7 @@ class QdrantKnowledgeStore:
         # exclude chunks whose source license is not in the whitelist.
         allowed = self._kb.allowed_licenses
         if allowed:
-            must.append(
-                models.FieldCondition(
-                    key="license", match=models.MatchAny(any=allowed)
-                )
-            )
+            must.append(models.FieldCondition(key="license", match=models.MatchAny(any=allowed)))
         filters = query.filters
         if filters:
             if filters.language:

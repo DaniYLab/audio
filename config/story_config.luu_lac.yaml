@@ -1,0 +1,26 @@
+# Story config cho universe "luu-lac" — corpus: kênh Thiên Bình Toon
+# "Lưu Lạc Đảo Hoang Cùng 18 Mỹ Nữ Và Cái Kết" (POC corpus).
+# Schema: storyforge.core.types.StoryConfig.
+
+title: "Lưu Lạc Đảo Hoang"
+genre: "phiêu lưu / sinh tồn / hậu cung"
+universe: "luu-lac"       # BẮT BUỘC — canon dài hạn, tất cả tập nối vào cùng KB này
+season: "s1"
+target_minutes: 5
+language: vi
+
+style:
+  tone: "căng thẳng, kịch tính, nhiều tình huống bất ngờ"
+  pov: third_limited
+  tense: past
+  art_style: "semi-realistic digital painting, tropical island, cinematic lighting, vivid colors"
+
+grounding: loose          # strict = chỉ dùng sự kiện có trong KB
+premise: >
+  Một chàng trai lưu lạc ra đảo hoang sau tai nạn biển và phải sinh tồn
+  cùng những người bạn đồng hành, khám phá bí mật của hòn đảo.
+source_query: "sinh tồn đảo hoang lưu lạc"
+
+characters: []
+
+# M4-A1/A2 serial controls (giữ default): hook auto, recap bật từ tập 2.

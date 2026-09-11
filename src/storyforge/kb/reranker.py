@@ -42,7 +42,7 @@ class CrossEncoderReranker:
     def rerank(self, query: str, hits: list[SearchHit]) -> list[SearchHit]:
         if not hits:
             return hits
-        from sentence_transformers import CrossEncoder  # type: ignore[import-not-found]
+        from sentence_transformers import CrossEncoder
 
         model = CrossEncoder(self._model_name)
         pairs = [(query, hit.text) for hit in hits]

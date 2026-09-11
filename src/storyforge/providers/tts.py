@@ -65,7 +65,7 @@ class EdgeTTS:
         self._settings = settings
 
     def synthesize(self, scene: StoryScene, out_path: str, voice: str | None) -> NarrationClip:
-        import edge_tts  # type: ignore[import-not-found]
+        import edge_tts
 
         cfg = self._settings.tts
 

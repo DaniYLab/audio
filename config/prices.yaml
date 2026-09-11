@@ -9,6 +9,7 @@ llm:
   gpt-4o-mini:       { input_per_1k: 0.00015, output_per_1k: 0.0006 }
   glm-4.6:           { input_per_1k: 0.0006, output_per_1k: 0.0020 }   # ước lượng, điều chỉnh theo hóa đơn
   deepseek-chat:     { input_per_1k: 0.0003, output_per_1k: 0.0006 }   # ước lượng, điều chỉnh theo hóa đơn
+  gemini-3.8-flash:  { input_per_1k: 0.0003, output_per_1k: 0.0012 }   # gateway llmgate — calibrate theo hóa đơn thật
 
 # Giá mỗi 1K tokens (USD) cho embedding, per model.
 embedding:
@@ -20,6 +21,7 @@ images:
   "fal-ai/flux/schnell":          { per_image: 0.003 }   # ước lượng, điều chỉnh theo hóa đơn
   "fal-ai/flux-pro/kontext":      { per_image: 0.050 }   # ước lượng, điều chỉnh theo hóa đơn
   "gpt-image-1":                  { per_image: 0.040 }
+  "gpt-image-2":                  { per_image: 0.104 }   # chuẩn OpenAI medium 1536x1024 — calibrate gateway
 
 # Giá mỗi 1K chars (USD), per TTS engine.
 tts:

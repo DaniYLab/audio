@@ -31,13 +31,26 @@ from storyforge.providers.animation import (
 logger = get_logger(__name__)
 
 
-def _motion_for(settings: Settings, duration_seconds: float) -> MotionSpec:
+def _motion_for(
+    settings: Settings, duration_seconds: float, prompt: str | None = None
+) -> MotionSpec:
     """Motion for a scene: API-worthy scenes use the configured default motion;
     very short scenes use Ken Burns (cheap, no API call needed)."""
     kind = settings.animation.motion_default
     if duration_seconds < settings.animation.min_duration_seconds:
         kind = "kenburns"
-    return MotionSpec(kind=kind, intensity=0.3)
+    return MotionSpec(kind=kind, intensity=0.3, prompt=prompt)
+
+
+def _scene_prompts(ctx: StageContext) -> dict[str, str]:
+    """scene_id -> image_prompt from the story artifact (text-guided providers)."""
+    try:
+        import json
+
+        data = json.loads(ctx.store.story_path().read_text(encoding="utf-8"))
+        return {s["scene_id"]: s.get("image_prompt", "") for s in data.get("scenes", [])}
+    except Exception:
+        return {}
 
 
 class AnimationStage(Stage):
@@ -60,6 +73,7 @@ class AnimationStage(Stage):
         api_calls = 0
         kenburns = 0
         uses_api = not isinstance(provider, KenBurnsFallback)
+        prompts = _scene_prompts(ctx)
 
         for clip in self.clips:
             illustration = self.illustrations.get(clip.scene_id)
@@ -78,12 +92,12 @@ class AnimationStage(Stage):
                 )
                 continue
 
-            motion = _motion_for(ctx.settings, clip.duration_seconds)
+            motion = _motion_for(
+                ctx.settings, clip.duration_seconds, prompt=prompts.get(clip.scene_id)
+            )
             # Scenes under min_duration never hit the API (M6-W1 §2.1).
             if motion.kind == "kenburns" and uses_api:
-                logger.info(
-                    "animation kenburns (short scene)", scene=clip.scene_id
-                )
+                logger.info("animation kenburns (short scene)", scene=clip.scene_id)
                 kenburns += 1
                 continue
             try:

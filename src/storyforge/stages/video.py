@@ -110,8 +110,11 @@ class VideoStage(Stage):
             raise VideoAssemblyError(f"missing illustrations for scenes: {sorted(missing)}")
 
         concat_list = ctx.store.dir("logs") / "concat.txt"
+        # The concat demuxer resolves relative entries against the concat
+        # file's own directory — write bare filenames (segments live in the
+        # same logs dir) so the resolution is cwd-independent.
         concat_list.write_text(
-            "\n".join(f"file '{p.as_posix()}'" for p in segment_paths), encoding="utf-8"
+            "\n".join(f"file '{p.name}'" for p in segment_paths), encoding="utf-8"
         )
 
         music_path = self._resolve_music(ctx)
@@ -181,10 +184,14 @@ class VideoStage(Stage):
 
         animated_clip = self.animated.get(clip.scene_id)
         if animated_clip is not None:
-            # M6-W1: mux the narration onto the motion clip (no zoompan).
+            # M6-W1: mux the narration onto the motion clip (no zoompan). Local
+            # i2v clips (SVD) are a few seconds of ambient motion, so loop the
+            # video stream until it covers the narration.
             cmd = [
                 settings.ffmpeg_bin,
                 "-y",
+                "-stream_loop",
+                "-1",
                 "-i",
                 str(animated_clip),
                 "-i",

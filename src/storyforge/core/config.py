@@ -66,6 +66,10 @@ class KnowledgeSettings(BaseModel):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: SecretStr = SecretStr("")
     qdrant_timeout_seconds: float = 30.0
+    # In-process file-based Qdrant (no server needed) — for Colab/containers
+    # without Docker. When set, overrides qdrant_url.
+    # Env: SF__KNOWLEDGE__QDRANT_PATH
+    qdrant_path: Path | None = None
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     chunk_size_tokens: int = 600
     chunk_overlap_tokens: int = 90
@@ -131,10 +135,31 @@ class VideoSettings(BaseModel):
 class AnimationSettings(BaseModel):
     """M6-W1: image-to-video animation provider."""
 
-    provider: Literal["auto", "kenburns", "fal_kling", "veo"] = "auto"
+    provider: Literal["auto", "kenburns", "fal_kling", "veo", "svd_local", "wan_local"] = "auto"
     motion_default: Literal["kenburns", "slow_push", "pan", "subtle_zoom"] = "slow_push"
     min_duration_seconds: float = 3.0
     budget_per_video_usd: float = 2.0
+    # --- SVD local (M6-W1 alt): image-to-video on the local GPU, cost = $0 ---
+    svd_model: str = "stabilityai/stable-video-diffusion-img2vid-xt"
+    svd_frames: int = 25  # SVD-XT native window
+    svd_fps: int = 7  # 25 frames @ 7 fps ≈ 3.6s; VideoStage loops to narration
+    svd_steps: int = 25
+    svd_motion_bucket: int = 127  # SVD default; scaled by MotionSpec.intensity
+    svd_noise_aug: float = 0.02  # conditioning-image noise
+    svd_seed: int = 42  # fixed seed keeps reruns reproducible
+    # --- Wan 2.2 TI2V-5B local (M6-W1 alt): text+image-to-video, cost = $0 ---
+    # Much stronger than SVD: 704p, 24 fps, prompt-guided motion.
+    wan_model: str = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    wan_frames: int = 81  # 81 frames @ 24 fps ≈ 3.4s; VideoStage loops
+    wan_fps: int = 24
+    wan_steps: int = 30  # 50 is native; 30 balances speed/quality (≈29s/step)
+    wan_guidance: float = 5.0
+    wan_flow_shift: float = 5.0  # UniPC flow shift (Turbo recipe requires 5.0)
+    wan_width: int = 1280
+    wan_height: int = 704  # Wan2.2 native res — any other size breaks seq shapes
+    wan_seed: int = 42
+    # bf16 needs Ampere+ (A100/L4); Turing (T4) lacks bf16 tensor cores.
+    wan_dtype: Literal["bfloat16", "float16"] = "bfloat16"
 
 
 class StorySettings(BaseModel):

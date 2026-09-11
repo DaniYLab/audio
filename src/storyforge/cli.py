@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 if TYPE_CHECKING:
     from storyforge.kb.alias import AliasStore
@@ -32,8 +32,55 @@ from storyforge.core.config import Settings
 from storyforge.core.contracts import StageContext
 from storyforge.core.exceptions import StoryForgeError
 from storyforge.core.logging import configure_logging, get_logger
-from storyforge.core.types import RunManifest, StoryConfig, utc_now
+from storyforge.core.types import (
+    Illustration,
+    NarrationClip,
+    RunManifest,
+    SourceRef,
+    Story,
+    StoryConfig,
+    Transcript,
+    utc_now,
+)
 from storyforge.kb.types import KnowledgeStore, SearchIntent, SearchQuery
+
+_PIPELINE_STAGES = (
+    "download",
+    "transcribe",
+    "knowledge",
+    "story",
+    "review",
+    "tts",
+    "imaging",
+    "video",
+)
+# Upstream stages whose in-memory outputs a stage consumes. ``--only`` only
+# works if these run in the same invocation, so the CLI closes the set over
+# this dependency map up front instead of failing mid-run.
+_STAGE_DEPS: dict[str, set[str]] = {
+    "transcribe": {"download"},
+    "knowledge": {"download", "transcribe"},
+    "review": {"story"},
+    "tts": {"story"},
+    "imaging": {"story"},
+    "video": {"tts", "imaging"},
+}
+
+
+def _validate_only(only: list[str]) -> None:
+    unknown = sorted(set(only) - set(_PIPELINE_STAGES))
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown stage(s): {', '.join(unknown)}. " f"Valid: {', '.join(_PIPELINE_STAGES)}"
+        )
+    for stage in sorted(only):
+        missing = _STAGE_DEPS.get(stage, set()) - set(only)
+        if missing:
+            raise typer.BadParameter(
+                f"--only {stage} also needs: {', '.join(sorted(missing))} "
+                "(upstream outputs are passed in-memory)"
+            )
+
 
 app = typer.Typer(
     name="storyforge",
@@ -108,185 +155,223 @@ def _execute_pipeline(
     ctx = StageContext(settings, store, manifest)
     recorder = MetricsRecorder()
     bind_run_recorder(recorder)
+    only_set = set(only) if only else None
+
+    def _wants(name: str) -> bool:
+        return only_set is None or name in only_set
+
+    sources: list[SourceRef] = []
+    transcripts: list[Transcript] = []
+    story: Story | None = None
+    clips: list[NarrationClip] = []
+    illustrations: list[Illustration] = []
 
     try:
         # download
-        try:
-            set_current_stage("download")
-            download = DownloadStage(urls=urls, local_files=local_files, license=license)
-            sources = download.run(ctx, force=force)
-            ctx.mark_done("download", sources=len(sources))
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "download", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
+        if _wants("download"):
+            try:
+                set_current_stage("download")
+                download = DownloadStage(urls=urls, local_files=local_files, license=license)
+                sources = download.run(ctx, force=force)
+                ctx.mark_done("download", sources=len(sources))
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "download", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
+        else:
+            ctx.mark_skipped("download")
 
         # transcribe
-        try:
-            set_current_stage("transcribe")
-            transcribe = TranscribeStage(sources=sources)
-            transcripts = transcribe.run(ctx, force=force)
-            ctx.mark_done("transcribe", transcripts=len(transcripts))
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "transcribe", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
+        if _wants("transcribe"):
+            try:
+                set_current_stage("transcribe")
+                transcribe = TranscribeStage(sources=sources)
+                transcripts = transcribe.run(ctx, force=force)
+                ctx.mark_done("transcribe", transcripts=len(transcripts))
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "transcribe", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
+        else:
+            ctx.mark_skipped("transcribe")
 
         # knowledge
-        try:
-            set_current_stage("knowledge")
-            knowledge = KnowledgeStage(
-                transcripts=transcripts,
-                universe=story_config.universe,
-                grounding=story_config.grounding,
-            )
-            reports = knowledge.run(ctx, force=force)
-            ctx.mark_done("knowledge", reports=len(reports))
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "knowledge", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
+        if _wants("knowledge"):
+            try:
+                set_current_stage("knowledge")
+                knowledge = KnowledgeStage(
+                    transcripts=transcripts,
+                    universe=story_config.universe,
+                    grounding=story_config.grounding,
+                )
+                reports = knowledge.run(ctx, force=force)
+                ctx.mark_done("knowledge", reports=len(reports))
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "knowledge", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
+        else:
+            ctx.mark_skipped("knowledge")
 
         # story
-        try:
-            set_current_stage("story")
-            story_stage = StoryStage(config=story_config)
-            story = story_stage.run(ctx, force=force)
-            ctx.mark_done("story", scenes=len(story.scenes))
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "story", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
-        _accumulate_style_stats(settings, store, story_config.universe)
+        if _wants("story"):
+            try:
+                set_current_stage("story")
+                story_stage = StoryStage(config=story_config)
+                story = story_stage.run(ctx, force=force)
+                ctx.mark_done("story", scenes=len(story.scenes))
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "story", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
+            _accumulate_style_stats(settings, store, story_config.universe)
+        else:
+            ctx.mark_skipped("story")
 
         # review
-        try:
-            set_current_stage("review")
-            review = ReviewStage(story=story).run(ctx, force=force)
-            ctx.mark_done("review", conflicts=review.summary.n_conflict)
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "review", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
+        if _wants("review"):
+            assert story is not None  # _validate_only guarantees the story stage ran
+            try:
+                set_current_stage("review")
+                review = ReviewStage(story=story).run(ctx, force=force)
+                ctx.mark_done("review", conflicts=review.summary.n_conflict)
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "review", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
+        else:
+            ctx.mark_skipped("review")
 
         # tts
-        try:
-            set_current_stage("tts")
-            tts_stage = TTSStage(story=story)
-            clips = tts_stage.run(ctx, force=force)
-            ctx.mark_done("tts", clips=len(clips))
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "tts", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
+        if _wants("tts"):
+            assert story is not None
+            try:
+                set_current_stage("tts")
+                tts_stage = TTSStage(story=story)
+                clips = tts_stage.run(ctx, force=force)
+                ctx.mark_done("tts", clips=len(clips))
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "tts", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
+        else:
+            ctx.mark_skipped("tts")
 
         # imaging
-        try:
-            imaging = ImagingStage(story=story)
-            illustrations = imaging.run(ctx, force=force)
-            ctx.mark_done("imaging", images=len(illustrations))
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "imaging", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
-
-        # M4-A3: auto thumbnail (best-effort — publish reuses thumbnail.png).
-        try:
-            from storyforge.m4tools import auto_thumbnail
-
-            auto_thumbnail(settings, store)
-        except Exception:
-            logger.warning("auto thumbnail skipped (best-effort)")
-
-        # M6-W1: optional animation stage — runs only when an API provider is
-        # configured (fal_kling/veo); the default kenburns stays internal.
-        animated: dict[str, Path] = {}
-        if settings.animation.provider in ("fal_kling", "veo"):
+        if _wants("imaging"):
+            assert story is not None
             try:
-                from storyforge.stages.animation import AnimationStage
+                imaging = ImagingStage(story=story)
+                illustrations = imaging.run(ctx, force=force)
+                ctx.mark_done("imaging", images=len(illustrations))
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "imaging", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
 
-                anim_stage = AnimationStage(
-                    clips=clips,
-                    illustrations={i.scene_id: i for i in illustrations},
-                )
-                anim_result = anim_stage.run(ctx, force=force)
-                animated = {scene_id: clip.clip_path for scene_id, clip in anim_result.items()}
-                api_animated = sum(
-                    1 for c in anim_result.values() if c.provider != "kenburns_fallback"
-                )
-                ctx.mark_done("animation", animated=api_animated)
-                flush_into_manifest(recorder, manifest)
-                store.save_manifest(manifest)
+            # M4-A3: auto thumbnail (best-effort — publish reuses thumbnail.png).
+            try:
+                from storyforge.m4tools import auto_thumbnail
+
+                auto_thumbnail(settings, store)
             except Exception:
-                logger.warning("animation stage failed — continuing without animated clips")
+                logger.warning("auto thumbnail skipped (best-effort)")
+        else:
+            ctx.mark_skipped("imaging")
 
-        # recap (T1-DEV2): prepend "Previously On" clip for episodes ≥ 2.
-        equip_recap = getattr(story_config, "recap", True) is not False
-        recap_segment = None
-        if equip_recap:
-            try:
-                from storyforge.ledger.loader import load_universe
-                from storyforge.recap import execute_recap
+        # Video chain (animation + recap + music + assembly) — all gated by
+        # --only video; recap/mood are no-ops when the data isn't there.
+        if _wants("video"):
+            # M6-W1: optional animation stage — runs only when an API provider
+            # is configured (fal_kling/veo); kenburns default stays internal.
+            animated: dict[str, Path] = {}
+            if settings.animation.provider in ("fal_kling", "veo", "svd_local", "wan_local"):
+                try:
+                    from storyforge.stages.animation import AnimationStage
 
-                universe_dir = settings.knowledge.ledgers_dir / story_config.universe
-                if universe_dir.exists():
-                    ledger = load_universe(universe_dir)
-                    image_dir = store.dir("06_images")
-                    scene_images = sorted(image_dir.glob("*.png")) if image_dir.exists() else []
-                    episode_number = len(ledger.episodes) + 1 if ledger.episodes else 2
-                    # M6-V2: recap sees only canon established up to the last
-                    # shipped episode — never facts from the future.
-                    as_of = ledger.episodes[-1].episode_id if ledger.episodes else None
-                    recap_segment = execute_recap(
-                        settings,
-                        store,
-                        ledger,
-                        episode_number,
-                        scenes=scene_images,
-                        as_of_episode=as_of,
+                    anim_stage = AnimationStage(
+                        clips=clips,
+                        illustrations={i.scene_id: i for i in illustrations},
                     )
-            except Exception:
-                logger.warning("recap generation failed — continuing")
+                    anim_result = anim_stage.run(ctx, force=force)
+                    animated = {scene_id: clip.clip_path for scene_id, clip in anim_result.items()}
+                    api_animated = sum(
+                        1 for c in anim_result.values() if c.provider != "kenburns_fallback"
+                    )
+                    ctx.mark_done("animation", animated=api_animated)
+                    flush_into_manifest(recorder, manifest)
+                    store.save_manifest(manifest)
+                except Exception:
+                    logger.warning("animation stage failed — continuing without animated clips")
 
-        # video
-        # M6-W2: auto-classify music mood when not set explicitly.
-        if story_config.music_mood is None:
+            # recap (T1-DEV2): prepend "Previously On" clip for episodes ≥ 2.
+            equip_recap = getattr(story_config, "recap", True) is not False
+            recap_segment = None
+            if equip_recap:
+                try:
+                    from storyforge.ledger.loader import load_universe
+                    from storyforge.recap import execute_recap
+
+                    universe_dir = settings.knowledge.ledgers_dir / story_config.universe
+                    if universe_dir.exists():
+                        ledger = load_universe(universe_dir)
+                        image_dir = store.dir("06_images")
+                        scene_images = sorted(image_dir.glob("*.png")) if image_dir.exists() else []
+                        episode_number = len(ledger.episodes) + 1 if ledger.episodes else 2
+                        # M6-V2: recap sees only canon established up to the
+                        # last shipped episode — never facts from the future.
+                        as_of = ledger.episodes[-1].episode_id if ledger.episodes else None
+                        recap_segment = execute_recap(
+                            settings,
+                            store,
+                            ledger,
+                            episode_number,
+                            scenes=scene_images,
+                            as_of_episode=as_of,
+                        )
+                except Exception:
+                    logger.warning("recap generation failed — continuing")
+
+            # M6-W2: auto-classify music mood when not set explicitly.
+            if story_config.music_mood is None and story is not None:
+                try:
+                    from storyforge.music import load_moods
+                    from storyforge.musicmood import classify_mood
+
+                    moods = [m.mood for m in load_moods()]
+                    auto_mood = classify_mood(story, ctx.settings, available_moods=moods)
+                    if auto_mood:
+                        story_config.music_mood = auto_mood
+                        logger.info("music mood auto-classified", mood=auto_mood)
+                except Exception:
+                    logger.warning("music mood auto-classification failed (no music)")
+
             try:
-                from storyforge.music import load_moods
-                from storyforge.musicmood import classify_mood
+                video = VideoStage(
+                    clips=clips,
+                    illustrations=illustrations,
+                    music_mood=story_config.music_mood,
+                    recap=recap_segment,
+                    animated=animated or None,
+                )
+                result = video.run(ctx, force=force)
+                ctx.mark_done("video", seconds=result.duration_seconds)
+            except StoryForgeError as exc:
+                _mark_failed(ctx, "video", exc)
+                raise typer.Exit(code=1) from exc
+            flush_into_manifest(recorder, manifest)
+            store.save_manifest(manifest)
 
-                moods = [m.mood for m in load_moods()]
-                auto_mood = classify_mood(story, ctx.settings, available_moods=moods)
-                if auto_mood:
-                    story_config.music_mood = auto_mood
-                    logger.info("music mood auto-classified", mood=auto_mood)
-            except Exception:
-                logger.warning("music mood auto-classification failed (no music)")
-
-        try:
-            video = VideoStage(
-                clips=clips,
-                illustrations=illustrations,
-                music_mood=story_config.music_mood,
-                recap=recap_segment,
-                animated=animated or None,
-            )
-            result = video.run(ctx, force=force)
-            ctx.mark_done("video", seconds=result.duration_seconds)
-        except StoryForgeError as exc:
-            _mark_failed(ctx, "video", exc)
-            raise typer.Exit(code=1) from exc
-        flush_into_manifest(recorder, manifest)
-        store.save_manifest(manifest)
-
-        console.print(f"[green]✓[/green] Video: {result.video_path}")
+            console.print(f"[green]✓[/green] Video: {result.video_path}")
+        else:
+            ctx.mark_skipped("video")
     finally:
         flush_into_manifest(recorder, manifest)
         store.save_manifest(manifest)
@@ -406,9 +491,7 @@ def _enqueue_run_webhooks(
         else:
             dispatcher.enqueue(universe, "run_end", {"project": project})
         for alert in alerts:
-            dispatcher.enqueue(
-                universe, "alert", {"project": project, "message": alert}
-            )
+            dispatcher.enqueue(universe, "alert", {"project": project, "message": alert})
     except Exception as exc:
         logger.warning("webhook enqueue failed (pipeline continues)", error=str(exc))
 
@@ -473,12 +556,13 @@ def run(
         str,
         typer.Option(
             "--license",
-            help="Content license of the ingested sources "
-            "(cc0|cc_by|owned|permission|unknown).",
+            help="Content license of the ingested sources " "(cc0|cc_by|owned|permission|unknown).",
         ),
     ] = "unknown",
 ) -> None:
     """Execute the full pipeline for one project."""
+    if only:
+        _validate_only(only)
     settings = _load_settings(config)
     configure_logging(settings)
     try:
@@ -1170,7 +1254,9 @@ app.add_typer(character_ref_app, name="character-ref")
 def character_ref_set(
     universe: Annotated[str, typer.Option(help="Universe id.")],
     name: Annotated[str, typer.Argument(help="Character name.")],
-    image: Annotated[Path, typer.Option(help="Path to the reference image PNG.", exists=True, readable=True)],
+    image: Annotated[
+        Path, typer.Option(help="Path to the reference image PNG.", exists=True, readable=True)
+    ],
     config: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Set a canonical reference image for a character (T3-DEV2)."""
@@ -1230,9 +1316,7 @@ def music(
     list_moods: Annotated[
         bool, typer.Option("--list", help="List moods from config/music_moods.yaml.")
     ] = False,
-    add: Annotated[
-        Path | None, typer.Option(help="Music file to add to the library.")
-    ] = None,
+    add: Annotated[Path | None, typer.Option(help="Music file to add to the library.")] = None,
     mood: Annotated[str | None, typer.Option(help="Mood name (with --add).")] = None,
     license: Annotated[
         str | None, typer.Option(help="CC0 license URL (required with --add).")
@@ -1266,9 +1350,7 @@ def music(
             console.print(f"[red]✗[/red] {exc}")
             raise typer.Exit(code=1) from exc
         dur = f"{entry.duration_seconds:.1f}s" if entry.duration_seconds else "n/a"
-        console.print(
-            f"[green]✓[/green] added '{mood}' -> {entry.file} (duration {dur})"
-        )
+        console.print(f"[green]✓[/green] added '{mood}' -> {entry.file} (duration {dur})")
         return
 
     moods = load_moods()
@@ -1288,9 +1370,7 @@ def music(
 
     if LICENSES_PATH.exists():
         console.print(f"license info: {LICENSES_PATH}")
-    console.print(
-        "[green]use:[/green] set StoryConfig.music_mood=<mood> in your story config"
-    )
+    console.print("[green]use:[/green] set StoryConfig.music_mood=<mood> in your story config")
 
 
 # --- M3-V4: disk lifecycle ----------------------------------------------------
@@ -1348,9 +1428,7 @@ def clean(
     table.add_column("files")
     table.add_column("freed bytes")
     table.add_column("skipped")
-    table.add_row(
-        str(report.file_count), f"{report.freed_bytes:,}", str(len(report.skipped_files))
-    )
+    table.add_row(str(report.file_count), f"{report.freed_bytes:,}", str(len(report.skipped_files)))
     console.print(table)
     for note in report.skipped_files[:10]:
         console.print(f"  [dim]skip: {note}[/dim]")
@@ -1480,8 +1558,11 @@ def publish(
         file_hash = PublishReceipt.hash_file(video_path)
         url = "https://youtu.be/dry-run"
         receipt = PublishReceipt(
-            project=project, video_id="dry-run", privacy=privacy,
-            file_hash=file_hash, url=url,
+            project=project,
+            video_id="dry-run",
+            privacy=privacy,
+            file_hash=file_hash,
+            url=url,
         )
         save_receipt(receipt_path, receipt)
         console.print(f"[green]✓[/green] dry-run receipt written to {receipt_path}")
@@ -1504,8 +1585,11 @@ def publish(
     file_hash = PublishReceipt.hash_file(video_path)
     url = f"https://youtu.be/{video_id}"
     receipt = PublishReceipt(
-        project=project, video_id=video_id, privacy=privacy,
-        file_hash=file_hash, url=url,
+        project=project,
+        video_id=video_id,
+        privacy=privacy,
+        file_hash=file_hash,
+        url=url,
     )
     save_receipt(receipt_path, receipt)
     console.print(f"[green]✓[/green] uploaded ({privacy}): {url}")
@@ -1560,9 +1644,7 @@ def _publish_channel(
     receipt_path = store.dir("07_video") / f"publish_{spec.platform}.json"
     privacy = spec.default_privacy or "private"
     if not should_upload(receipt_path, target, privacy):
-        console.print(
-            f"[green]✓[/green] {spec.platform} '{spec.credentials_ref}' already uploaded"
-        )
+        console.print(f"[green]✓[/green] {spec.platform} '{spec.credentials_ref}' already uploaded")
         return
 
     if settings.publish.upload_enabled is False and privacy == "private":
@@ -1653,7 +1735,12 @@ def channels_add(
         raise typer.Exit(code=1)
     registry = load_channel_registry()
     added = registry.add(
-        ChannelSpec(platform=platform, credentials_ref=cred_ref, vertical=vertical, default_privacy=privacy)  # type: ignore[arg-type]
+        ChannelSpec(
+            platform=cast(Literal["youtube", "tiktok", "shorts"], platform),
+            credentials_ref=cred_ref,
+            vertical=vertical,
+            default_privacy=privacy,
+        )
     )
     if not added:
         console.print(f"[yellow]channel already registered: {platform}/{cred_ref}[/yellow]")
@@ -1817,9 +1904,7 @@ def usage_export(
     universe: Annotated[str | None, typer.Option(help="Universe id filter.")] = None,
     since: Annotated[str | None, typer.Option(help="ISO date (YYYY-MM-DD).")] = None,
     out: Annotated[Path | None, typer.Option(help="Output path (default stdout).")] = None,
-    fmt: Annotated[
-        str, typer.Option(help="Output format: csv | jsonl.")
-    ] = "csv",
+    fmt: Annotated[str, typer.Option(help="Output format: csv | jsonl.")] = "csv",
     config: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Export per-stage usage from project manifests (M5-V4)."""
@@ -1906,9 +1991,7 @@ def analytics_pull(
         cache_ttl_hours=settings.analytics.retention_cache_ttl_hours,
     )
     ingested = ingestor.ingest_all(universe, Path(settings.workspace_dir))
-    console.print(
-        f"[green]✓[/green] ingested {ingested} video(s) for universe '{universe}'"
-    )
+    console.print(f"[green]✓[/green] ingested {ingested} video(s) for universe '{universe}'")
 
 
 @analytics_app.command("scene-retention")
@@ -2043,12 +2126,8 @@ def _make_job_runner(
 def worker(
     config: Annotated[Path | None, typer.Option()] = None,
     worker_id: Annotated[str | None, typer.Option(help="Worker id.")] = None,
-    loop: Annotated[
-        bool, typer.Option("--loop", help="Keep polling instead of one-shot.")
-    ] = False,
-    interval: Annotated[
-        int, typer.Option(help="Poll interval in --loop mode (seconds).")
-    ] = 30,
+    loop: Annotated[bool, typer.Option("--loop", help="Keep polling instead of one-shot.")] = False,
+    interval: Annotated[int, typer.Option(help="Poll interval in --loop mode (seconds).")] = 30,
 ) -> None:
     """Claim and run one queue job (or poll forever with --loop) — M4-A6."""
     from storyforge.queue import run_worker
@@ -2126,9 +2205,7 @@ def queue_add(
         ),
     ] = Path("config/story_config.example.yaml"),
     universe: Annotated[str | None, typer.Option(help="Universe id.")] = None,
-    url: Annotated[
-        list[str] | None, typer.Option(help="YouTube URL. Repeatable.")
-    ] = None,
+    url: Annotated[list[str] | None, typer.Option(help="YouTube URL. Repeatable.")] = None,
     local_file: Annotated[
         list[Path] | None,
         typer.Option(
@@ -2143,9 +2220,7 @@ def queue_add(
     ] = None,
     license: Annotated[
         str,
-        typer.Option(
-            help="Content license (cc0|cc_by|owned|permission|unknown)."
-        ),
+        typer.Option(help="Content license (cc0|cc_by|owned|permission|unknown)."),
     ] = "unknown",
     config: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
@@ -2193,13 +2268,18 @@ def api(
     api_main(host=host, port=port, config=config)
 
 
-@app.callback()
-def main(
+@app.callback(invoke_without_command=True)
+def callback(
     version: Annotated[bool, typer.Option("--version", help="Show version.")] = False,
 ) -> None:
     if version:
         console.print(f"storyforge {__version__}")
         raise typer.Exit()
+
+
+def main() -> None:
+    """Console-script entrypoint (pyproject [project.scripts] storyforge)."""
+    app()
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ class WhisperXTranscriber:
         self._settings = settings
 
     def transcribe(self, audio_path: str) -> Transcript:
-        import whisperx  # type: ignore[import-not-found]
+        import whisperx  # type: ignore[import-untyped]
 
         cfg = self._settings.transcription
         try:
